@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.stacksmith/state.json
+.DS_Store

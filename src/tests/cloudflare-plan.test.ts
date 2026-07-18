@@ -1,0 +1,35 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createDefaultManifest } from "../core/defaults.js";
+import { cloudflareCommandPlan, r2CorsRules } from "../providers/cloudflare-plan.js";
+
+test("Cloudflare plan includes registrar, CORS, tunnel, and DNS commands", () => {
+  const manifest = createDefaultManifest({ name: "FaceReel", domain: "facereel.com" });
+  const commands = cloudflareCommandPlan(manifest);
+
+  assert.ok(commands.some((command) => command.id === "cloudflare.domain.search"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.domain.register" && command.risk === "production-write"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.r2.cors.production"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.r2.custom-domain.production"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.dns.root"));
+  assert.equal(commands.some((command) => command.args.some((arg) => arg.includes("facereel-production.r2.dev"))), false);
+});
+
+test("R2 CORS rules include app origins and upload methods", () => {
+  const manifest = createDefaultManifest({ name: "FaceReel", domain: "facereel.com" });
+  const rules = r2CorsRules(manifest);
+
+  assert.deepEqual(rules.rules[0]?.allowed.methods, ["GET", "HEAD", "PUT", "POST", "DELETE"]);
+  assert.ok(rules.rules[0]?.allowed.origins.includes("https://facereel.com"));
+});
+
+test("Cloudflare free mode skips registrar and DNS commands", () => {
+  const manifest = createDefaultManifest({ name: "FaceReel" });
+  const commands = cloudflareCommandPlan(manifest);
+
+  assert.equal(commands.some((command) => command.id.startsWith("cloudflare.domain.")), false);
+  assert.equal(commands.some((command) => command.id.startsWith("cloudflare.dns.")), false);
+  assert.ok(commands.some((command) => command.id === "cloudflare.r2.cors.dev"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.tunnel.quick.web"));
+  assert.equal(commands.some((command) => command.id === "cloudflare.tunnel.route.dev"), false);
+});

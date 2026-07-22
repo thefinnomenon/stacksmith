@@ -11,7 +11,7 @@ import { createProject } from "../core/create.js";
 import { providerCommandPlan } from "../providers/command-plans.js";
 
 const liveCloudflareEnabled = process.env.STACKSMITH_LIVE_CLOUDFLARE_TEST === "1";
-const liveCloudflareSkipReason = "Set STACKSMITH_LIVE_CLOUDFLARE_TEST=1 to run live Cloudflare R2 create/CORS/delete tests.";
+const liveCloudflareSkipReason = "Set STACKSMITH_LIVE_CLOUDFLARE_TEST=1 to run live Cloudflare R2 create/CORS/delete tests with the local Wrangler login.";
 const testTimeoutMs = 240_000;
 
 interface ProcessResult {
@@ -24,9 +24,9 @@ function projectSuffix(): string {
   return randomBytes(3).toString("hex");
 }
 
-function requireCloudflareEnv(): NodeJS.ProcessEnv {
-  assert.ok(process.env.CLOUDFLARE_API_TOKEN, "Set CLOUDFLARE_API_TOKEN to run live Cloudflare tests.");
-  assert.ok(process.env.CLOUDFLARE_ACCOUNT_ID, "Set CLOUDFLARE_ACCOUNT_ID to run live Cloudflare tests.");
+async function requireCloudflareAuth(): Promise<NodeJS.ProcessEnv> {
+  const result = await run("wrangler", ["whoami"]);
+  assert.equal(result.exitCode, 0, `Run \`wrangler login\` before live Cloudflare tests.\n${result.stderr}`);
   return process.env;
 }
 
@@ -94,7 +94,7 @@ test("live Cloudflare command plan creates verifies configures and deletes an R2
   skip: liveCloudflareEnabled ? false : liveCloudflareSkipReason,
   timeout: testTimeoutMs
 }, async () => {
-  const env = requireCloudflareEnv();
+  const env = await requireCloudflareAuth();
   const name = `stacksmith-live-r2-${projectSuffix()}`;
   const bucket = `${name}-dev`;
   const root = join(await mkdtemp(join(tmpdir(), "stacksmith-live-r2-")), name);
@@ -132,7 +132,7 @@ test("live Cloudflare CLI flow creates configures and undoes an R2 bucket", {
   skip: liveCloudflareEnabled ? false : liveCloudflareSkipReason,
   timeout: testTimeoutMs
 }, async () => {
-  const env = requireCloudflareEnv();
+  const env = await requireCloudflareAuth();
   const name = `stacksmith-cli-r2-${projectSuffix()}`;
   const bucket = `${name}-dev`;
   const root = join(await mkdtemp(join(tmpdir(), "stacksmith-cli-r2-")), name);

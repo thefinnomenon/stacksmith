@@ -70,3 +70,26 @@ test("doctor includes Cloud Run readiness when gcloud is available", async () =>
 
   assert.equal(report.checks.some((check) => check.id === "cloud-run.billing" && check.status === "pass"), true);
 });
+
+test("doctor treats Wrangler auth as enough for Cloudflare R2 operations", async () => {
+  const manifest = createDefaultManifest({ name: "FaceReel" });
+  const state = createInitialState(manifest);
+  const report = await runDoctor({
+    manifest,
+    state,
+    env: {
+      PATH: "/usr/bin"
+    },
+    runCommand: async (command, args) => {
+      if (command === "wrangler" && args.join(" ") === "whoami") {
+        return { exitCode: 0, stdout: "Account ID b928c988ffda26bd62bc406b7971d53c\n", stderr: "" };
+      }
+
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+    executableExists: async (command) => command === "wrangler"
+  });
+
+  assert.equal(report.checks.some((check) => check.id === "cloudflare.wrangler.auth" && check.status === "pass"), true);
+  assert.equal(report.checks.some((check) => check.id === "env.cloudflare.CLOUDFLARE_API_TOKEN"), false);
+});

@@ -88,6 +88,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
   const r2EventWorkerConfig = "workers/r2-event-forwarder/wrangler.jsonc";
   const corsFile = ".stacksmith/r2-cors.json";
   const domain = manifest.domain;
+  const wranglerAuthEnv: string[] | undefined = undefined;
   const tunnelCommands: ExternalCommand[] = domain ? [
     {
       provider: "cloudflare" as const,
@@ -178,12 +179,12 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
       args: ["queues", "create", r2EventQueueName],
       risk: "reversible" as const,
       requiresConfirmation: true,
-      env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+      env: wranglerAuthEnv,
       check: {
         description: `${r2EventQueueName} queue exists.`,
         command: "wrangler",
         args: ["queues", "info", r2EventQueueName],
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+        env: wranglerAuthEnv
       },
       undo: {
         description: "Delete the R2 event queue.",
@@ -192,12 +193,12 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         stdin: "y\n",
         risk: "destructive" as const,
         requiresConfirmation: true,
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+        env: wranglerAuthEnv,
         check: {
           description: `${r2EventQueueName} queue exists.`,
           command: "wrangler",
           args: ["queues", "info", r2EventQueueName],
-          env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+          env: wranglerAuthEnv
         }
       }
     },
@@ -209,13 +210,13 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
       args: ["deploy", "--config", r2EventWorkerConfig],
       risk: "reversible" as const,
       requiresConfirmation: true,
-      env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+      env: wranglerAuthEnv,
       check: {
         description: `${r2EventWorkerName} Worker has deployments.`,
         command: "wrangler",
         args: ["deployments", "list", "--config", r2EventWorkerConfig],
         stdoutIncludes: r2EventWorkerName,
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+        env: wranglerAuthEnv
       },
       undo: {
         description: "Delete the R2 event forwarder Worker.",
@@ -223,7 +224,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         args: ["delete", r2EventWorkerName],
         risk: "destructive" as const,
         requiresConfirmation: true,
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+        env: wranglerAuthEnv
       }
     },
     {
@@ -234,14 +235,14 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
       args: ["secret", "put", "R2_EVENT_WEBHOOK_SECRET", "--config", r2EventWorkerConfig],
       risk: "reversible" as const,
       requiresConfirmation: true,
-      env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "R2_EVENT_WEBHOOK_SECRET"],
+      env: ["R2_EVENT_WEBHOOK_SECRET"],
       stdinFromEnv: "R2_EVENT_WEBHOOK_SECRET",
       check: {
         description: "R2_EVENT_WEBHOOK_SECRET exists on the forwarder Worker.",
         command: "wrangler",
         args: ["secret", "list", "--config", r2EventWorkerConfig],
         stdoutIncludes: "R2_EVENT_WEBHOOK_SECRET",
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+        env: wranglerAuthEnv
       },
       undo: {
         description: "Delete the R2 event webhook secret from the forwarder Worker.",
@@ -249,13 +250,13 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         args: ["secret", "delete", "R2_EVENT_WEBHOOK_SECRET", "--config", r2EventWorkerConfig],
         risk: "destructive" as const,
         requiresConfirmation: true,
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+        env: wranglerAuthEnv,
         check: {
           description: "R2_EVENT_WEBHOOK_SECRET exists on the forwarder Worker.",
           command: "wrangler",
           args: ["secret", "list", "--config", r2EventWorkerConfig],
           stdoutIncludes: "R2_EVENT_WEBHOOK_SECRET",
-          env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+          env: wranglerAuthEnv
         }
       }
     },
@@ -278,13 +279,13 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
       ],
       risk: bucket.risk,
       requiresConfirmation: true,
-      env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+      env: wranglerAuthEnv,
       check: {
         description: `${bucket.name} has an R2 notification rule for ${r2EventTypes.join(" and ")}.`,
         command: "wrangler",
         args: ["r2", "bucket", "notification", "list", bucket.name],
         stdoutIncludes: r2EventQueueName,
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+        env: wranglerAuthEnv
       },
       undo: {
         description: `Delete R2 notification rules for ${bucket.name} that target ${r2EventQueueName}.`,
@@ -292,13 +293,13 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         args: ["r2", "bucket", "notification", "delete", bucket.name, "--queue", r2EventQueueName],
         risk: "destructive" as const,
         requiresConfirmation: true,
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+        env: wranglerAuthEnv,
         check: {
           description: `${bucket.name} has R2 notification rules for ${r2EventQueueName}.`,
           command: "wrangler",
           args: ["r2", "bucket", "notification", "list", bucket.name],
           stdoutIncludes: r2EventQueueName,
-          env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+          env: wranglerAuthEnv
         }
       }
     }))
@@ -394,13 +395,13 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         args: ["r2", "bucket", "create", bucket.name],
         risk: bucket.risk,
         requiresConfirmation: true,
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+        env: wranglerAuthEnv,
         check: {
           description: `${bucket.name} R2 bucket exists.`,
           command: "wrangler",
           args: ["r2", "bucket", "list"],
           stdoutIncludes: bucket.name,
-          env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+          env: wranglerAuthEnv
         },
         undo: {
           description: `Delete the ${bucket.id} R2 bucket.`,
@@ -409,7 +410,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
           stdin: "y\n",
           risk: "destructive" as const,
           requiresConfirmation: true,
-          env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+          env: wranglerAuthEnv
         }
       },
       {
@@ -420,13 +421,13 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         args: ["r2", "bucket", "cors", "set", bucket.name, "--file", corsFile, "--force"],
         risk: bucket.risk,
         requiresConfirmation: true,
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+        env: wranglerAuthEnv,
         check: {
           description: `${bucket.name} R2 CORS policy is configured.`,
           command: "wrangler",
           args: ["r2", "bucket", "cors", "list", bucket.name],
           stdoutIncludes: "allowed",
-          env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+          env: wranglerAuthEnv
         },
         undo: {
           description: `Delete the ${bucket.id} R2 CORS policy.`,
@@ -434,7 +435,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
           args: ["r2", "bucket", "cors", "delete", bucket.name, "--force"],
           risk: bucket.risk,
           requiresConfirmation: true,
-          env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+          env: wranglerAuthEnv
         }
       },
       {
@@ -445,7 +446,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         args: ["r2", "bucket", "cors", "list", bucket.name],
         risk: "read-only" as const,
         requiresConfirmation: false,
-        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+        env: wranglerAuthEnv,
         undo: {
           description: "CORS verification is read-only and has no undo.",
           command: "stacksmith",

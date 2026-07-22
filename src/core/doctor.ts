@@ -38,7 +38,6 @@ const providerTools: Partial<Record<ProviderId, string[]>> = {
 const providerEnv: Partial<Record<ProviderId, string[]>> = {
   vercel: ["VERCEL_TOKEN"],
   "prisma-postgres": ["DATABASE_URL"],
-  cloudflare: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
   resend: ["RESEND_API_KEY"],
   stripe: ["STRIPE_SECRET_KEY"],
   posthog: ["POSTHOG_PROJECT_API_KEY", "POSTHOG_HOST"],
@@ -210,6 +209,49 @@ export async function runDoctor(input: {
           status: "warn",
           message: "Skipped GitHub authentication check because gh is not installed.",
           remediation: "Install GitHub CLI and run `gh auth login`."
+        });
+      }
+    }
+
+    if (provider === "cloudflare") {
+      const wranglerPresent = await toolExists("wrangler", env.PATH);
+      if (wranglerPresent) {
+        const auth = await runCommand("wrangler", ["whoami"], env);
+        checks.push({
+          id: "cloudflare.wrangler.auth",
+          label: "Cloudflare Wrangler authentication",
+          status: auth.exitCode === 0 ? "pass" : "warn",
+          message: auth.exitCode === 0 ? "Wrangler is authenticated." : "Wrangler is not authenticated.",
+          remediation: "Run `wrangler login` before executing Cloudflare R2, Queue, or Worker commands."
+        });
+      } else {
+        checks.push({
+          id: "cloudflare.wrangler.auth",
+          label: "Cloudflare Wrangler authentication",
+          status: "warn",
+          message: "Skipped Wrangler authentication check because wrangler is not installed.",
+          remediation: "Install Wrangler and run `wrangler login`."
+        });
+      }
+
+      const apiVariables = input.manifest.domain
+        ? [
+            "CLOUDFLARE_API_TOKEN",
+            "CLOUDFLARE_ACCOUNT_ID",
+            ...(input.manifest.providers.cloudflare.dns ? ["CLOUDFLARE_ZONE_ID"] : [])
+          ]
+        : [];
+
+      for (const variable of apiVariables) {
+        const present = Boolean(env[variable]);
+        checks.push({
+          id: `env.cloudflare.${variable}`,
+          label: `cloudflare API credential ${variable}`,
+          status: present ? "pass" : "warn",
+          message: present
+            ? `${variable} is set.`
+            : `${variable} is not set. R2 can use Wrangler auth, but domain/DNS API commands need this value.`,
+          remediation: `Set ${variable} before executing Cloudflare Registrar, DNS, or custom-domain commands.`
         });
       }
     }

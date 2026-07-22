@@ -29,7 +29,7 @@ test("provider command plans expose future external operations", () => {
   assert.equal(commands.some((command) => command.id === "cloud-run.billing.link"), true);
   assert.equal(commands.some((command) => command.id === "cloud-run.services.enable"), true);
   assert.equal(commands.some((command) => command.id === "cloud-run.artifact-registry.create"), true);
-  assert.equal(commands.some((command) => command.id === "prisma-postgres.vercel.integration.authorize"), true);
+  assert.equal(commands.some((command) => command.id === "prisma-postgres.vercel.integration.available"), true);
   assert.equal(commands.some((command) => command.id === "prisma-postgres.vercel.database.create"), true);
   assert.equal(commands.some((command) => command.id === "prisma-postgres.vercel.database.connect"), true);
   assert.equal(commands.some((command) => command.id === "vercel.auth.check"), true);
@@ -134,25 +134,42 @@ test("Cloud Run commands target the manifest Google Cloud project", () => {
   assert.equal(createProject.undo?.args.includes("ss-facereel"), true);
 });
 
-test("Prisma Postgres commands use the Vercel Marketplace integration", () => {
+test("Prisma Postgres commands use the Vercel Marketplace integration resource flow", () => {
   const manifest = createDefaultManifest({ name: "FaceReel" });
+  manifest.providers.vercel.team = "finnternet";
   const commands = allProviderCommandPlans(manifest);
-  const authorize = commands.find((command) => command.id === "prisma-postgres.vercel.integration.authorize");
+  const available = commands.find((command) => command.id === "prisma-postgres.vercel.integration.available");
   const createDatabase = commands.find((command) => command.id === "prisma-postgres.vercel.database.create");
   const connect = commands.find((command) => command.id === "prisma-postgres.vercel.database.connect");
 
-  assert.ok(authorize);
+  assert.ok(available);
   assert.ok(createDatabase);
   assert.ok(connect);
-  assert.deepEqual(authorize.env, ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "PRISMA_INTEGRATION_CONFIG_ID"]);
-  assert.deepEqual(createDatabase.env, ["VERCEL_TOKEN", "VERCEL_TEAM_ID"]);
-  assert.deepEqual(connect.env, ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "PRISMA_INTEGRATION_CONFIG_ID"]);
-  assert.equal(authorize.args.join(" ").includes("integrations/billing/authorization"), true);
-  assert.equal(createDatabase.args.join(" ").includes("storage/stores/integration"), true);
-  assert.equal(connect.args.join(" ").includes("resources/${store.id}/connections"), true);
-  assert.equal(createDatabase.args.join(" ").includes("facereel-production"), true);
-  assert.equal(createDatabase.args.join(" ").includes("source: 'marketplace'"), true);
-  assert.equal(createDatabase.undo?.description.includes("not implemented"), true);
+  assert.equal(available.args.join(" ").includes("integration discover prisma"), true);
+  assert.equal(available.check?.stdoutIncludes, "prisma/prisma-postgres");
+  assert.deepEqual(createDatabase.env, undefined);
+  assert.equal(createDatabase.args.join(" ").includes("integration add prisma/prisma-postgres"), true);
+  assert.equal(createDatabase.args.join(" ").includes("--name"), true);
+  assert.equal(createDatabase.args.join(" ").includes("facereel-production-db"), true);
+  assert.equal(createDatabase.args.join(" ").includes("--plan"), true);
+  assert.equal(createDatabase.args.join(" ").includes("free"), true);
+  assert.equal(createDatabase.args.join(" ").includes("region=iad1"), true);
+  assert.equal(createDatabase.args.join(" ").includes("--no-connect"), true);
+  assert.equal(createDatabase.args.join(" ").includes("--scope"), true);
+  assert.equal(createDatabase.args.join(" ").includes("finnternet"), true);
+  assert.equal(createDatabase.check?.args.join(" ").includes("integration-resource inspect facereel-production-db"), true);
+  assert.equal(createDatabase.undo?.args.join(" ").includes("integration-resource remove facereel-production-db --disconnect-all --yes"), true);
+  assert.equal(connect.args.join(" ").includes("integration-resource connect"), true);
+  assert.equal(connect.args.join(" ").includes("facereel-production-db"), true);
+  assert.equal(connect.args.join(" ").includes("facereel"), true);
+  assert.equal(connect.args.join(" ").includes("--environment production"), true);
+  assert.equal(connect.args.join(" ").includes("--environment preview"), true);
+  assert.equal(connect.args.join(" ").includes("--environment development"), true);
+  assert.equal(connect.check?.command, "sh");
+  assert.equal(connect.check?.args.join(" ").includes("integration-resource inspect"), true);
+  assert.equal(connect.check?.args.join(" ").includes("facereel-production-db"), true);
+  assert.equal(connect.check?.args.join(" ").includes("project.name === projectName"), true);
+  assert.equal(connect.undo?.args.join(" ").includes("integration-resource disconnect facereel-production-db facereel --yes"), true);
 });
 
 test("Vercel commands create project spine and environment variables idempotently", () => {

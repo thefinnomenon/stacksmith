@@ -299,98 +299,69 @@ function prismaPostgresCommandPlan(manifest: ProjectManifest): ExternalCommand[]
   const config = manifest.providers["prisma-postgres"];
   const region = config.region ?? "iad1";
   const billingPlan = config.billingPlan ?? "free";
-  const productId = "prisma-postgres";
-  const authFile = ".stacksmith/prisma-authorization.json";
-  const databaseFile = ".stacksmith/prisma-database.json";
-  const connectionFile = ".stacksmith/prisma-connection.json";
-
-  const authorizeScript = [
-    "const fs = await import('node:fs/promises');",
-    "const teamId = process.env.VERCEL_TEAM_ID;",
-    "const integrationConfigurationId = process.env.PRISMA_INTEGRATION_CONFIG_ID;",
-    `const productId = process.env.PRISMA_PRODUCT_ID || ${JSON.stringify(productId)};`,
-    `const billingPlanId = process.env.PRISMA_BILLING_PLAN || ${JSON.stringify(billingPlan)};`,
-    `const region = process.env.PRISMA_POSTGRES_REGION || ${JSON.stringify(region)};`,
-    "const response = await fetch(`https://api.vercel.com/v1/integrations/billing/authorization?teamId=${teamId}`, {",
-    "  method: 'POST',",
-    "  headers: { Authorization: `Bearer ${process.env.VERCEL_TOKEN}`, 'Content-Type': 'application/json' },",
-    "  body: JSON.stringify({",
-    "    integrationIdOrSlug: 'prisma',",
-    "    productId,",
-    "    billingPlanId,",
-    "    metadata: JSON.stringify({ region }),",
-    "    integrationConfigurationId",
-    "  })",
-    "});",
-    "if (!response.ok) throw new Error(`Prisma billing authorization failed: ${response.status} ${await response.text()}`);",
-    "await fs.mkdir('.stacksmith', { recursive: true });",
-    `await fs.writeFile(${JSON.stringify(authFile)}, JSON.stringify(await response.json(), null, 2) + '\\n');`
+  const resourceName = `${manifest.slug}-production-db`;
+  const scopeArgs = vercelScopeArgs(manifest);
+  const resourceJsonFile = ".stacksmith/prisma-resource.json";
+  const connectionJsonFile = ".stacksmith/prisma-connection.json";
+  const createResourceShell = [
+    "mkdir -p .stacksmith &&",
+    "vercel",
+    "integration",
+    "add",
+    "prisma/prisma-postgres",
+    "--name",
+    shSingleQuote(resourceName),
+    "--plan",
+    shSingleQuote(billingPlan),
+    "-m",
+    shSingleQuote(`region=${region}`),
+    "--no-connect",
+    "--no-env-pull",
+    "--format=json",
+    ...scopeArgs.map(shSingleQuote),
+    ">",
+    resourceJsonFile
   ].join(" ");
-
-  const createDatabaseScript = [
-    "const fs = await import('node:fs/promises');",
-    "const authorizationData = JSON.parse(await fs.readFile('.stacksmith/prisma-authorization.json', 'utf8'));",
-    "const authorization = authorizationData.authorization ?? authorizationData;",
-    "const teamId = process.env.VERCEL_TEAM_ID;",
-    "const configId = process.env.PRISMA_INTEGRATION_CONFIG_ID || authorization.integrationConfigurationId;",
-    "const authorizationId = process.env.PRISMA_AUTHORIZATION_ID || authorization.id;",
-    `const productId = process.env.PRISMA_PRODUCT_ID || ${JSON.stringify(productId)};`,
-    `const billingPlanId = process.env.PRISMA_BILLING_PLAN || ${JSON.stringify(billingPlan)};`,
-    `const region = process.env.PRISMA_POSTGRES_REGION || ${JSON.stringify(region)};`,
-    "const response = await fetch(`https://api.vercel.com/v1/storage/stores/integration?teamId=${teamId}`, {",
-    "  method: 'POST',",
-    "  headers: { Authorization: `Bearer ${process.env.VERCEL_TOKEN}`, 'Content-Type': 'application/json' },",
-    "  body: JSON.stringify({",
-    "    metadata: { region },",
-    "    billingPlanId,",
-    `    name: ${JSON.stringify(`${manifest.slug}-production`)},`,
-    "    integrationConfigurationId: configId,",
-    "    integrationProductIdOrSlug: productId,",
-    "    authorizationId,",
-    "    source: 'marketplace'",
-    "  })",
-    "});",
-    "if (!response.ok) throw new Error(`Prisma database creation failed: ${response.status} ${await response.text()}`);",
-    `await fs.writeFile(${JSON.stringify(databaseFile)}, JSON.stringify(await response.json(), null, 2) + '\\n');`
+  const connectResourceShell = [
+    "mkdir -p .stacksmith &&",
+    "vercel",
+    "integration-resource",
+    "connect",
+    shSingleQuote(resourceName),
+    shSingleQuote(manifest.slug),
+    "--environment",
+    "production",
+    "--environment",
+    "preview",
+    "--environment",
+    "development",
+    "--format=json",
+    "--yes",
+    ...scopeArgs.map(shSingleQuote),
+    ">",
+    connectionJsonFile
   ].join(" ");
-
-  const connectDatabaseScript = [
-    "const fs = await import('node:fs/promises');",
-    "const vercelProject = JSON.parse(await fs.readFile('.vercel/project.json', 'utf8'));",
-    "const databaseData = JSON.parse(await fs.readFile('.stacksmith/prisma-database.json', 'utf8'));",
-    "const store = databaseData.store ?? databaseData;",
-    "const teamId = process.env.VERCEL_TEAM_ID;",
-    "const projectId = process.env.VERCEL_PROJECT_ID || vercelProject.projectId;",
-    "const configId = process.env.PRISMA_INTEGRATION_CONFIG_ID;",
-    `const productId = process.env.PRISMA_PRODUCT_ID || ${JSON.stringify(productId)};`,
-    "const response = await fetch(`https://api.vercel.com/v1/integrations/installations/${configId}/products/${productId}/resources/${store.id}/connections?teamId=${teamId}`, {",
-    "  method: 'POST',",
-    "  headers: { Authorization: `Bearer ${process.env.VERCEL_TOKEN}`, 'Content-Type': 'application/json' },",
-    "  body: JSON.stringify({ projectId })",
-    "});",
-    "if (!response.ok) throw new Error(`Prisma database connection failed: ${response.status} ${await response.text()}`);",
-    `await fs.writeFile(${JSON.stringify(connectionFile)}, JSON.stringify({ projectId, storeId: store.id, connectedAt: new Date().toISOString() }, null, 2) + '\\n');`
-  ].join(" ");
+  const connectionCheck = prismaConnectionCheckCommand(resourceName, manifest.slug, scopeArgs);
 
   return [
     {
       provider,
-      id: "prisma-postgres.vercel.integration.authorize",
-      description: "Authorize Prisma Postgres billing for the Vercel Marketplace integration.",
-      command: "node",
-      args: ["--input-type=module", "--eval", authorizeScript],
-      risk: "production-write",
-      requiresConfirmation: true,
-      env: ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "PRISMA_INTEGRATION_CONFIG_ID"],
+      id: "prisma-postgres.vercel.integration.available",
+      description: "Verify Prisma Postgres is available in the Vercel Marketplace.",
+      command: "vercel",
+      args: ["integration", "discover", "prisma", ...scopeArgs],
+      risk: "read-only",
+      requiresConfirmation: false,
       check: {
-        description: "Prisma Vercel Marketplace authorization response is recorded.",
-        command: "test",
-        args: ["-f", authFile]
+        description: "Prisma Postgres marketplace product is discoverable.",
+        command: "vercel",
+        args: ["integration", "discover", "prisma", ...scopeArgs],
+        stdoutIncludes: "prisma/prisma-postgres"
       },
       undo: {
-        description: "Prisma billing authorizations are not deleted by Stacksmith yet; remove the marketplace authorization in Vercel if needed.",
+        description: "No undo is needed for a read-only Prisma Marketplace discovery check.",
         command: "stacksmith",
-        args: ["noop", "prisma-postgres.vercel.integration.authorize"],
+        args: ["noop", "prisma-postgres.vercel.integration.available"],
         risk: "read-only",
         requiresConfirmation: false
       }
@@ -398,48 +369,81 @@ function prismaPostgresCommandPlan(manifest: ProjectManifest): ExternalCommand[]
     {
       provider,
       id: "prisma-postgres.vercel.database.create",
-      description: "Create the Prisma Postgres production database through Vercel Marketplace APIs.",
-      command: "node",
-      args: ["--input-type=module", "--eval", createDatabaseScript],
+      description: "Create the Prisma Postgres production database through the Vercel Marketplace.",
+      command: "sh",
+      args: ["-c", createResourceShell],
       risk: "production-write",
       requiresConfirmation: true,
-      env: ["VERCEL_TOKEN", "VERCEL_TEAM_ID"],
       check: {
-        description: "Prisma Postgres database response is recorded.",
-        command: "test",
-        args: ["-f", databaseFile]
+        description: "Prisma Postgres Marketplace resource exists.",
+        command: "vercel",
+        args: ["integration-resource", "inspect", resourceName, "--format=json", ...scopeArgs],
+        stdoutIncludes: resourceName
       },
       undo: {
-        description: "Prisma database deletion is not implemented in Stacksmith yet; delete the marketplace store from Vercel/Prisma before rerunning destructive tests.",
-        command: "stacksmith",
-        args: ["noop", "prisma-postgres.vercel.database.create"],
-        risk: "read-only",
-        requiresConfirmation: false
+        description: "Delete the Prisma Postgres Marketplace resource and disconnect any projects first.",
+        command: "vercel",
+        args: ["integration-resource", "remove", resourceName, "--disconnect-all", "--yes", "--format=json", ...scopeArgs],
+        risk: "destructive",
+        requiresConfirmation: true,
+        check: {
+          description: "Prisma Postgres Marketplace resource exists.",
+          command: "vercel",
+          args: ["integration-resource", "inspect", resourceName, "--format=json", ...scopeArgs],
+          stdoutIncludes: resourceName
+        }
       }
     },
     {
       provider,
       id: "prisma-postgres.vercel.database.connect",
-      description: "Connect the Prisma Postgres database to the local Vercel project for env injection.",
-      command: "node",
-      args: ["--input-type=module", "--eval", connectDatabaseScript],
+      description: "Connect the Prisma Postgres database to the Vercel project for env injection.",
+      command: "sh",
+      args: ["-c", connectResourceShell],
       risk: "production-write",
       requiresConfirmation: true,
-      env: ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "PRISMA_INTEGRATION_CONFIG_ID"],
       check: {
-        description: "Prisma Postgres Vercel connection response is recorded.",
-        command: "test",
-        args: ["-f", connectionFile]
+        description: "Prisma Postgres resource is connected to the Vercel project.",
+        command: "sh",
+        args: ["-c", connectionCheck]
       },
       undo: {
-        description: "Prisma database disconnection is not implemented in Stacksmith yet; remove the resource connection in Vercel if needed.",
-        command: "stacksmith",
-        args: ["noop", "prisma-postgres.vercel.database.connect"],
-        risk: "read-only",
-        requiresConfirmation: false
+        description: "Disconnect the Prisma Postgres Marketplace resource from the Vercel project.",
+        command: "vercel",
+        args: ["integration-resource", "disconnect", resourceName, manifest.slug, "--yes", "--format=json", ...scopeArgs],
+        risk: "production-write",
+        requiresConfirmation: true,
+        check: {
+          description: "Prisma Postgres resource is connected to the Vercel project.",
+          command: "sh",
+          args: ["-c", connectionCheck]
+        }
       }
     }
   ];
+}
+
+function prismaConnectionCheckCommand(resourceName: string, projectName: string, scopeArgs: string[]): string {
+  const inspectCommand = [
+    "vercel",
+    "integration-resource",
+    "inspect",
+    shSingleQuote(resourceName),
+    "--format=json",
+    ...scopeArgs.map(shSingleQuote)
+  ].join(" ");
+  const parser = [
+    "let input = '';",
+    "process.stdin.on('data', chunk => input += chunk);",
+    "process.stdin.on('end', () => {",
+    "  const data = JSON.parse(input);",
+    `  const projectName = ${JSON.stringify(projectName)};`,
+    "  const connected = data.resource?.projects?.some(project => project.name === projectName);",
+    "  process.exit(connected ? 0 : 1);",
+    "});"
+  ].join(" ");
+
+  return `${inspectCommand} | node -e ${shSingleQuote(parser)}`;
 }
 
 function stripeCommandPlan(manifest: ProjectManifest): ExternalCommand[] {

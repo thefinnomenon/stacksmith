@@ -65,6 +65,15 @@ test("default manifest can use a project subdomain on a base domain", () => {
   assert.equal(manifest.environments.production.filesUrl, "https://files.push.finternet.com");
 });
 
+test("default manifest records an explicit Vercel team scope", () => {
+  const manifest = createDefaultManifest({
+    name: "FaceReel",
+    vercelTeam: "chris-projects-2bda84b2"
+  });
+
+  assert.equal(manifest.providers.vercel.team, "chris-projects-2bda84b2");
+});
+
 test("observability tags keep preview as the environment and PR as a tag", () => {
   const tags = buildObservabilityTags({
     environment: "preview",

@@ -213,6 +213,7 @@ export function createDefaultManifest(input: {
   baseDomain?: string;
   projectSubdomain?: string;
   backendMode?: ProjectManifest["backendMode"];
+  vercelTeam?: string;
 }): ProjectManifest {
   const slug = slugify(input.name);
 
@@ -227,6 +228,9 @@ export function createDefaultManifest(input: {
   });
   const activeDomain = domainConfig.activeDomain;
 
+  const providers = defaultProviders(slug);
+  providers.vercel.team = input.vercelTeam;
+
   return {
     schemaVersion: 1,
     name: input.name.trim(),
@@ -237,7 +241,7 @@ export function createDefaultManifest(input: {
     backendMode: input.backendMode ?? "hybrid",
     environments: defaultEnvironments(slug, activeDomain),
     previews: defaultPreviewConfig,
-    providers: defaultProviders(slug),
+    providers,
     operations: defaultOperations
   };
 }

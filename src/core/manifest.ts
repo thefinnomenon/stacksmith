@@ -26,6 +26,7 @@ export async function initializeManifest(input: {
   baseDomain?: string;
   projectSubdomain?: string;
   backendMode?: ProjectManifest["backendMode"];
+  vercelTeam?: string;
   path?: string;
 }): Promise<ProjectManifest> {
   const manifest = createDefaultManifest(input);

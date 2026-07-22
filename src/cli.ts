@@ -24,8 +24,8 @@ function help(): string {
     "stacksmith <command>",
     "",
     "Commands:",
-    "  create [name] [target-dir] [--domain example.com | --base-domain example.com] [--project-subdomain name] [--backend hybrid|worker|next-only] [--force] [--interactive]",
-    "  init [name] [--domain example.com] [--backend hybrid|worker|next-only] [--interactive]",
+    "  create [name] [target-dir] [--domain example.com | --base-domain example.com] [--project-subdomain name] [--backend hybrid|worker|next-only] [--vercel-team team] [--force] [--interactive]",
+    "  init [name] [--domain example.com] [--backend hybrid|worker|next-only] [--vercel-team team] [--interactive]",
     "  plan [--json] [--manifest path] [--state path]",
     "  apply --yes [--provider github,vercel] [--manifest path] [--state path]",
     "  doctor [--json]",
@@ -76,7 +76,8 @@ async function run(argv: string[]): Promise<string> {
             domain: flagString(parsed.flags, "domain"),
             baseDomain: flagString(parsed.flags, "base-domain"),
             projectSubdomain: flagString(parsed.flags, "project-subdomain"),
-            backendMode: (flagString(parsed.flags, "backend") ?? "hybrid") as ProjectManifest["backendMode"]
+            backendMode: (flagString(parsed.flags, "backend") ?? "hybrid") as ProjectManifest["backendMode"],
+            vercelTeam: flagString(parsed.flags, "vercel-team")
           };
 
       const manifest = await initializeManifest({
@@ -85,6 +86,7 @@ async function run(argv: string[]): Promise<string> {
         baseDomain: answers.baseDomain,
         projectSubdomain: answers.projectSubdomain,
         backendMode: answers.backendMode,
+        vercelTeam: answers.vercelTeam,
         path: flagString(parsed.flags, "manifest")
       });
       const state = await loadState(manifest, flagString(parsed.flags, "state"));
@@ -109,7 +111,8 @@ async function run(argv: string[]): Promise<string> {
             domain: flagString(parsed.flags, "domain"),
             baseDomain: flagString(parsed.flags, "base-domain"),
             projectSubdomain: flagString(parsed.flags, "project-subdomain"),
-            backendMode: (flagString(parsed.flags, "backend") ?? "hybrid") as ProjectManifest["backendMode"]
+            backendMode: (flagString(parsed.flags, "backend") ?? "hybrid") as ProjectManifest["backendMode"],
+            vercelTeam: flagString(parsed.flags, "vercel-team")
           };
 
       const result = await createProject({
@@ -118,6 +121,7 @@ async function run(argv: string[]): Promise<string> {
         baseDomain: answers.baseDomain,
         projectSubdomain: answers.projectSubdomain,
         backendMode: answers.backendMode,
+        vercelTeam: answers.vercelTeam,
         targetDir: answers.targetDir,
         force: flagBoolean(parsed.flags, "force")
       });

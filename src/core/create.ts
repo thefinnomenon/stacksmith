@@ -12,6 +12,7 @@ export interface CreateProjectInput {
   baseDomain?: string;
   projectSubdomain?: string;
   backendMode?: ProjectManifest["backendMode"];
+  vercelTeam?: string;
   targetDir?: string;
   force?: boolean;
 }
@@ -34,7 +35,8 @@ export async function createProject(input: CreateProjectInput): Promise<CreatePr
     domain: input.domain,
     baseDomain: input.baseDomain,
     projectSubdomain: input.projectSubdomain,
-    backendMode: input.backendMode
+    backendMode: input.backendMode,
+    vercelTeam: input.vercelTeam
   });
   const root = resolve(input.targetDir ?? defaultCreateTargetDir(input.name));
   const manifestPath = join(root, DEFAULT_MANIFEST_PATH);

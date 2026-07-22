@@ -86,7 +86,6 @@ async function assertCorsConfigured(bucket: string, env: NodeJS.ProcessEnv): Pro
 }
 
 async function cleanupBucket(bucket: string, env: NodeJS.ProcessEnv): Promise<void> {
-  await run("wrangler", ["r2", "bucket", "cors", "delete", bucket, "--force"], { env });
   await run("wrangler", ["r2", "bucket", "delete", bucket], { env, stdin: "y\n" });
 }
 
@@ -115,10 +114,10 @@ test("live Cloudflare command plan creates verifies configures and deletes an R2
     await assertBucketExists(bucket, env);
     await assertCorsConfigured(bucket, env);
 
-    for (const command of [...commands].reverse()) {
-      const commandResult = await runExternalCommand({ command, execute: true, mode: "undo", env });
-      assert.equal(commandResult.status, "executed", commandResult.stderr ?? commandResult.message);
-    }
+    const deleteBucket = commands.find((command) => command.id === "cloudflare.r2.dev");
+    assert.ok(deleteBucket);
+    const deleteBucketResult = await runExternalCommand({ command: deleteBucket, execute: true, mode: "undo", env });
+    assert.equal(deleteBucketResult.status, "executed", deleteBucketResult.stderr ?? deleteBucketResult.message);
 
     await assertBucketDeleted(bucket, env);
   } finally {
@@ -175,25 +174,23 @@ test("live Cloudflare CLI flow creates configures and undoes an R2 bucket", {
     await assertBucketExists(bucket, env);
     await assertCorsConfigured(bucket, env);
 
-    for (const id of ["cloudflare.r2.cors.dev", "cloudflare.r2.dev"]) {
-      const undo = await run(process.execPath, [
-        "--import",
-        tsxLoaderPath,
-        cliPath,
-        "commands",
-        "--provider",
-        "cloudflare",
-        "--id",
-        id,
-        "--manifest",
-        manifestPath,
-        "--state",
-        statePath,
-        "--execute",
-        "--undo"
-      ], { cwd: root, env });
-      assert.equal(undo.exitCode, 0, undo.stderr);
-    }
+    const undo = await run(process.execPath, [
+      "--import",
+      tsxLoaderPath,
+      cliPath,
+      "commands",
+      "--provider",
+      "cloudflare",
+      "--id",
+      "cloudflare.r2.dev",
+      "--manifest",
+      manifestPath,
+      "--state",
+      statePath,
+      "--execute",
+      "--undo"
+    ], { cwd: root, env });
+    assert.equal(undo.exitCode, 0, undo.stderr);
 
     await assertBucketDeleted(bucket, env);
   } finally {

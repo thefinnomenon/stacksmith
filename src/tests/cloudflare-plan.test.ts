@@ -18,10 +18,16 @@ test("Cloudflare plan includes registrar, CORS, tunnel, and DNS commands", () =>
   assert.equal(configureDevCors.args.includes("--force"), true);
   assert.equal(configureDevCors.undo?.args.includes("--force"), true);
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.queue"));
+  const eventQueue = commands.find((command) => command.id === "cloudflare.r2.events.queue");
+  assert.equal(eventQueue?.undo?.stdin, "y\n");
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.worker.deploy"));
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.worker.secret"));
-  assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.notification.production.object-create"));
-  assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.notification.production.object-delete"));
+  const productionNotifications = commands.find((command) => command.id === "cloudflare.r2.events.notification.production");
+  assert.ok(productionNotifications);
+  assert.deepEqual(
+    productionNotifications.args.filter((arg) => arg === "object-create" || arg === "object-delete"),
+    ["object-create", "object-delete"]
+  );
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.custom-domain.production"));
   assert.ok(commands.some((command) => command.id === "cloudflare.dns.root"));
   assert.equal(commands.some((command) => command.args.some((arg) => arg.includes("facereel-production.r2.dev"))), false);

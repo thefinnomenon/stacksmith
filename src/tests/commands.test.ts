@@ -23,7 +23,7 @@ test("provider command plans expose future external operations", () => {
   assert.equal(commands.some((command) => command.id === "cloudflare.r2.cors.dev"), true);
   assert.equal(commands.some((command) => command.id === "cloudflare.r2.events.queue"), true);
   assert.equal(commands.some((command) => command.id === "cloudflare.r2.events.worker.deploy"), true);
-  assert.equal(commands.some((command) => command.id === "cloudflare.r2.events.notification.production.object-create"), true);
+  assert.equal(commands.some((command) => command.id === "cloudflare.r2.events.notification.production"), true);
   assert.equal(commands.some((command) => command.id === "cloudflare.domain.check"), true);
   assert.equal(commands.some((command) => command.id === "cloud-run.project.create"), true);
   assert.equal(commands.some((command) => command.id === "cloud-run.billing.link"), true);

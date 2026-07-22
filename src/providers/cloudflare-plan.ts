@@ -189,6 +189,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         description: "Delete the R2 event queue.",
         command: "wrangler",
         args: ["queues", "delete", r2EventQueueName],
+        stdin: "y\n",
         risk: "destructive" as const,
         requiresConfirmation: true,
         env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
@@ -258,17 +259,28 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         }
       }
     },
-    ...buckets.flatMap((bucket) => r2EventTypes.map((eventType) => ({
+    ...buckets.map((bucket) => ({
       provider: "cloudflare" as const,
-      id: `cloudflare.r2.events.notification.${bucket.id}.${eventType}`,
-      description: `Forward ${eventType} notifications from ${bucket.name} to the R2 event queue.`,
+      id: `cloudflare.r2.events.notification.${bucket.id}`,
+      description: `Forward ${r2EventTypes.join(" and ")} notifications from ${bucket.name} to the R2 event queue.`,
       command: "wrangler",
-      args: ["r2", "bucket", "notification", "create", bucket.name, "--event-type", eventType, "--queue", r2EventQueueName],
+      args: [
+        "r2",
+        "bucket",
+        "notification",
+        "create",
+        bucket.name,
+        ...r2EventTypes.flatMap((eventType) => ["--event-type", eventType]),
+        "--queue",
+        r2EventQueueName,
+        "--description",
+        `Stacksmith ${manifest.slug} ${bucket.id} R2 events`
+      ],
       risk: bucket.risk,
       requiresConfirmation: true,
       env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
       check: {
-        description: `${bucket.name} has an R2 notification rule for ${eventType}.`,
+        description: `${bucket.name} has an R2 notification rule for ${r2EventTypes.join(" and ")}.`,
         command: "wrangler",
         args: ["r2", "bucket", "notification", "list", bucket.name],
         stdoutIncludes: r2EventQueueName,
@@ -289,7 +301,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
           env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
         }
       }
-    })))
+    }))
   ] : [];
 
   return [

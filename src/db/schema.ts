@@ -36,6 +36,26 @@ create index if not exists jobs_claim_idx
   on jobs (status, run_after, created_at)
   where status in ('queued', 'retry');
 
+create table if not exists webhook_events (
+  id uuid primary key default gen_random_uuid(),
+  project_id text not null,
+  environment text not null,
+  provider text not null,
+  event_type text not null,
+  idempotency_key text not null,
+  status text not null default 'processing',
+  payload jsonb not null,
+  processed_at timestamptz,
+  failed_at timestamptz,
+  last_error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (provider, idempotency_key)
+);
+
+create index if not exists webhook_events_lookup_idx
+  on webhook_events (project_id, environment, provider, status, created_at desc);
+
 create table if not exists incidents (
   id uuid primary key default gen_random_uuid(),
   fingerprint text not null unique,
@@ -84,7 +104,7 @@ create table if not exists preview_environments (
   database_name text,
   r2_prefix text,
   stripe_router_enabled boolean not null default false,
-  sentry_tags jsonb not null default '{}'::jsonb,
+  observability_tags jsonb not null default '{}'::jsonb,
   status text not null default 'provisioning',
   expires_at timestamptz,
   created_at timestamptz not null default now(),

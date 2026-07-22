@@ -13,7 +13,7 @@ function sampleIncident(): Incident {
     environment: "preview",
     previewId: "pr-184",
     pullRequestNumber: 184,
-    source: "sentry",
+    source: "posthog",
     category: "runtime-error",
     severity: "error",
     status: "open",
@@ -29,7 +29,7 @@ function sampleIncident(): Incident {
       webUrl: "https://preview.example.com",
       apiUrl: "https://api-preview.example.com"
     },
-    evidence: [{ type: "sentry-issue", issueId: "123", url: "https://sentry.example/issues/123" }],
+    evidence: [{ type: "posthog-issue", issueId: "123", url: "https://posthog.example/issues/123" }],
     actions: [],
     attemptedFixes: 0,
     createdAt: new Date(0).toISOString(),
@@ -53,6 +53,8 @@ test("preview metadata includes AI-readable deployment fields", () => {
   });
 
   assert.equal(metadata.environment, "preview");
+  assert.equal(metadata.app_environment, "preview");
+  assert.equal(metadata.project_slug, "facereel");
   assert.equal(metadata.preview_id, "pr-184");
   assert.equal(metadata.github_pr, 184);
 });
@@ -66,7 +68,7 @@ test("Slack incident message exposes registered actions", () => {
   });
 
   assert.equal(message.channel, "#facereel-alerts");
-  assert.match(JSON.stringify(message.blocks), /incident.open_sentry/);
+  assert.match(JSON.stringify(message.blocks), /incident.open_posthog/);
 });
 
 test("Slack signature verification accepts valid signatures", () => {
@@ -89,5 +91,6 @@ test("Slack signature verification accepts valid signatures", () => {
 
 test("MCP registry exposes incident and action tools", () => {
   assert.equal(listMcpTools().some((tool) => tool.name === "execute_action"), true);
-  assert.equal(getAction("incident.open_sentry").label, "Open Sentry");
+  assert.equal(listMcpTools().some((tool) => tool.name === "get_posthog_errors"), true);
+  assert.equal(getAction("incident.open_posthog").label, "Open PostHog");
 });

@@ -40,6 +40,11 @@ export function createAppFiles(manifest: ProjectManifest): GeneratedFile[] {
   const packageName = manifest.slug;
   const domain = manifest.domain ?? `${manifest.slug}.vercel.app`;
   const envNames = envContract.map((variable) => variable.name);
+  const r2EventForwarder = manifest.providers.cloudflare.r2EventForwarder;
+  const r2EventQueueName = r2EventForwarder?.queueName ?? `${manifest.slug}-r2-events`;
+  const r2EventWorkerName = r2EventForwarder?.workerName ?? `${manifest.slug}-r2-event-forwarder`;
+  const r2EventEndpointPath = r2EventForwarder?.endpointPath ?? "/api/webhook/cloudflare/r2";
+  const r2EventForwardUrl = new URL(r2EventEndpointPath, manifest.environments.production.appUrl).toString();
 
   return [
     {
@@ -61,8 +66,6 @@ export function createAppFiles(manifest: ProjectManifest): GeneratedFile[] {
         dependencies: {
           "@aws-sdk/client-s3": "^3.850.0",
           "@prisma/client": "^6.12.0",
-          "@sentry/nextjs": "^9.39.0",
-          "mixpanel": "^0.18.1",
           next: "^15.4.0",
           react: "^19.1.0",
           "react-dom": "^19.1.0",
@@ -123,6 +126,141 @@ dist/
     {
       path: ".stacksmith/r2-cors.json",
       content: r2CorsJson(manifest)
+    },
+    {
+      path: "workers/r2-event-forwarder/wrangler.jsonc",
+      content: `${JSON.stringify({
+        "$schema": "../../node_modules/wrangler/config-schema.json",
+        name: r2EventWorkerName,
+        main: "src/index.ts",
+        compatibility_date: "2026-07-22",
+        compatibility_flags: ["nodejs_compat"],
+        observability: {
+          enabled: true,
+          head_sampling_rate: 1
+        },
+        vars: {
+          STACKSMITH_PROJECT: manifest.slug,
+          R2_EVENT_FORWARD_URL: r2EventForwardUrl
+        },
+        queues: {
+          consumers: [
+            {
+              queue: r2EventQueueName,
+              max_batch_size: 10,
+              max_batch_timeout: 5,
+              max_retries: 5,
+              dead_letter_queue: `${r2EventQueueName}-dead`
+            }
+          ]
+        }
+      }, null, 2)}\n`
+    },
+    {
+      path: "workers/r2-event-forwarder/src/index.ts",
+      content: `export interface CloudflareR2Event {
+  account: string;
+  action: string;
+  bucket: string;
+  object: {
+    key: string;
+    size?: number;
+    eTag?: string;
+  };
+  eventTime: string;
+  copySource?: {
+    bucket: string;
+    object: string;
+  };
+}
+
+export interface Env {
+  STACKSMITH_PROJECT: string;
+  R2_EVENT_FORWARD_URL: string;
+  R2_EVENT_WEBHOOK_SECRET: string;
+}
+
+type QueueMessage<T> = {
+  body: T;
+  ack(): void;
+  retry(options?: { delaySeconds?: number }): void;
+};
+
+type QueueBatch<T> = {
+  messages: Array<QueueMessage<T>>;
+};
+
+async function hmacSha256Hex(secret: string, value: string) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function forwardEvents(events: CloudflareR2Event[], env: Env) {
+  const body = JSON.stringify({
+    project: env.STACKSMITH_PROJECT,
+    source: "cloudflare-r2",
+    receivedAt: new Date().toISOString(),
+    events
+  });
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const signature = "v1=" + await hmacSha256Hex(env.R2_EVENT_WEBHOOK_SECRET, \`\${timestamp}.\${body}\`);
+
+  const response = await fetch(env.R2_EVENT_FORWARD_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-stacksmith-event": "cloudflare-r2",
+      "x-stacksmith-project": env.STACKSMITH_PROJECT,
+      "x-stacksmith-timestamp": timestamp,
+      "x-stacksmith-signature": signature
+    },
+    body
+  });
+
+  if (!response.ok) {
+    throw new Error(\`R2 event forward failed: \${response.status} \${await response.text()}\`);
+  }
+
+  console.log(JSON.stringify({
+    event: "cloudflare.r2.forwarded",
+    project: env.STACKSMITH_PROJECT,
+    count: events.length
+  }));
+}
+
+async function forwardMessage(message: QueueMessage<CloudflareR2Event>, env: Env) {
+  try {
+    await forwardEvents([message.body], env);
+    message.ack();
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "cloudflare.r2.forward_failed",
+      project: env.STACKSMITH_PROJECT,
+      bucket: message.body.bucket,
+      objectKey: message.body.object.key,
+      error: error instanceof Error ? error.message : String(error)
+    }));
+    message.retry({ delaySeconds: 30 });
+  }
+}
+
+export default {
+  async fetch() {
+    return Response.json({ ok: true, service: "r2-event-forwarder" });
+  },
+
+  async queue(batch: QueueBatch<CloudflareR2Event>, env: Env) {
+    await Promise.all(batch.messages.map((message) => forwardMessage(message, env)));
+  }
+};
+`
     },
     {
       path: "next.config.ts",
@@ -234,6 +372,56 @@ export async function GET() {
 `
     },
     {
+      path: "app/api/webhook/cloudflare/r2/route.ts",
+      content: `import { createHmac, timingSafeEqual } from "node:crypto";
+import { NextRequest, NextResponse } from "next/server";
+import { handleCloudflareR2EventBatch, type CloudflareR2EventEnvelope } from "@/lib/cloudflare-r2-events";
+import { env } from "@/lib/env";
+
+export const runtime = "nodejs";
+
+const signatureHeader = "x-stacksmith-signature";
+const timestampHeader = "x-stacksmith-timestamp";
+
+function verifySignature(rawBody: string, timestamp: string | null, signature: string | null) {
+  if (!env.R2_EVENT_WEBHOOK_SECRET || !timestamp || !signature) {
+    return false;
+  }
+
+  const timestampMs = Number(timestamp) * 1000;
+  if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > 5 * 60 * 1000) {
+    return false;
+  }
+
+  const expected = "v1=" + createHmac("sha256", env.R2_EVENT_WEBHOOK_SECRET)
+    .update(\`\${timestamp}.\${rawBody}\`)
+    .digest("hex");
+
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(signature);
+
+  return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+export async function POST(request: NextRequest) {
+  const rawBody = await request.text();
+
+  if (!env.R2_EVENT_WEBHOOK_SECRET) {
+    return NextResponse.json({ error: "R2 event webhook secret is not configured." }, { status: 500 });
+  }
+
+  if (!verifySignature(rawBody, request.headers.get(timestampHeader), request.headers.get(signatureHeader))) {
+    return NextResponse.json({ error: "Invalid Cloudflare R2 event signature." }, { status: 401 });
+  }
+
+  const envelope = JSON.parse(rawBody) as CloudflareR2EventEnvelope;
+  const result = await handleCloudflareR2EventBatch(envelope);
+
+  return NextResponse.json({ ok: true, ...result });
+}
+`
+    },
+    {
       path: "app/.well-known/stacksmith/route.ts",
       content: `import { NextResponse } from "next/server";
 import { deployment } from "@/lib/deployment";
@@ -249,8 +437,221 @@ export async function GET() {
       r2: "unchecked",
       resend: "unchecked",
       stripe: "unchecked",
-      sentry: "configured-by-env",
-      mixpanel: "configured-by-env"
+      posthog: "configured-by-env"
+    }
+  });
+}
+`
+    },
+    {
+      path: "lib/cloudflare-r2-events.ts",
+      content: `import { deployment } from "./deployment";
+import { logInfo, trackEvent } from "./observability";
+import { markWebhookEventFailed, markWebhookEventProcessed, startWebhookEvent } from "./webhook-idempotency";
+
+export type CloudflareR2Action =
+  | "PutObject"
+  | "CopyObject"
+  | "CompleteMultipartUpload"
+  | "DeleteObject"
+  | "LifecycleDeletion"
+  | string;
+
+export interface CloudflareR2Event {
+  account: string;
+  action: CloudflareR2Action;
+  bucket: string;
+  object: {
+    key: string;
+    size?: number;
+    eTag?: string;
+  };
+  eventTime: string;
+  copySource?: {
+    bucket: string;
+    object: string;
+  };
+}
+
+export interface CloudflareR2EventEnvelope {
+  project: string;
+  source: "cloudflare-r2";
+  receivedAt: string;
+  events: CloudflareR2Event[];
+}
+
+export function cloudflareR2EventIdempotencyKey(event: CloudflareR2Event) {
+  return [
+    event.account,
+    event.bucket,
+    event.action,
+    event.object.key,
+    event.object.eTag ?? "",
+    event.object.size ?? "",
+    event.eventTime
+  ].join(":");
+}
+
+export async function handleCloudflareR2Event(event: CloudflareR2Event) {
+  logInfo("cloudflare.r2.event", {
+    bucket: event.bucket,
+    object_key: event.object.key,
+    action: event.action,
+    event_time: event.eventTime
+  });
+
+  return trackEvent("cloudflare.r2.event", {
+    bucket: event.bucket,
+    object_key: event.object.key,
+    object_size: event.object.size,
+    action: event.action,
+    event_time: event.eventTime
+  });
+}
+
+export async function handleCloudflareR2EventBatch(envelope: CloudflareR2EventEnvelope) {
+  const handled = [];
+  const skipped = [];
+
+  for (const event of envelope.events) {
+    const idempotencyKey = cloudflareR2EventIdempotencyKey(event);
+    const webhookEvent = await startWebhookEvent({
+      projectId: envelope.project,
+      environment: deployment.environment,
+      provider: "cloudflare-r2",
+      eventType: event.action,
+      idempotencyKey,
+      payload: event
+    });
+
+    if (!webhookEvent.started) {
+      skipped.push(idempotencyKey);
+      continue;
+    }
+
+    try {
+      handled.push(await handleCloudflareR2Event(event));
+      await markWebhookEventProcessed(webhookEvent.id);
+    } catch (error) {
+      await markWebhookEventFailed(webhookEvent.id, error);
+      throw error;
+    }
+  }
+
+  return {
+    received: envelope.events.length,
+    handled: handled.length,
+    skipped: skipped.length
+  };
+}
+`
+    },
+    {
+      path: "lib/webhook-idempotency.ts",
+      content: `import { db } from "./db";
+import type { Prisma } from "@prisma/client";
+
+export type WebhookEnvironment = "development" | "preview" | "staging" | "production";
+
+export type WebhookEventStatus = "processing" | "processed" | "failed";
+
+export interface StartWebhookEventInput {
+  projectId: string;
+  environment: WebhookEnvironment;
+  provider: string;
+  eventType: string;
+  idempotencyKey: string;
+  payload: unknown;
+}
+
+function isUniqueConstraintError(error: unknown) {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: string }).code === "P2002";
+}
+
+export async function startWebhookEvent(input: StartWebhookEventInput) {
+  try {
+    const event = await db.webhookEvent.create({
+      data: {
+        projectId: input.projectId,
+        environment: input.environment,
+        provider: input.provider,
+        eventType: input.eventType,
+        idempotencyKey: input.idempotencyKey,
+        payload: input.payload as Prisma.InputJsonValue
+      }
+    });
+
+    return {
+      started: true,
+      id: event.id,
+      status: event.status
+    };
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const existing = await db.webhookEvent.findUnique({
+      where: {
+        provider_idempotencyKey: {
+          provider: input.provider,
+          idempotencyKey: input.idempotencyKey
+        }
+      },
+      select: {
+        id: true,
+        status: true
+      }
+    });
+
+    if (existing?.status === "failed") {
+      const event = await db.webhookEvent.update({
+        where: { id: existing.id },
+        data: {
+          status: "processing",
+          eventType: input.eventType,
+          payload: input.payload as Prisma.InputJsonValue,
+          lastError: null,
+          updatedAt: new Date()
+        }
+      });
+
+      return {
+        started: true,
+        id: event.id,
+        status: event.status
+      };
+    }
+
+    return {
+      started: false,
+      id: existing?.id ?? "",
+      status: existing?.status ?? "processed"
+    };
+  }
+}
+
+export async function markWebhookEventProcessed(id: string) {
+  await db.webhookEvent.update({
+    where: { id },
+    data: {
+      status: "processed",
+      processedAt: new Date(),
+      lastError: null
+    }
+  });
+}
+
+export async function markWebhookEventFailed(id: string, error: unknown) {
+  await db.webhookEvent.update({
+    where: { id },
+    data: {
+      status: "failed",
+      failedAt: new Date(),
+      lastError: error instanceof Error ? error.message : String(error)
     }
   });
 }
@@ -281,12 +682,17 @@ const envSchema = z.object({
   R2_BUCKET_NAME: z.string().optional(),
   R2_PREFIX: z.string().optional(),
   R2_ENDPOINT: z.string().url().optional(),
+  R2_EVENT_WEBHOOK_SECRET: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
-  SENTRY_DSN: z.string().optional(),
-  NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
-  MIXPANEL_TOKEN: z.string().optional(),
-  NEXT_PUBLIC_MIXPANEL_TOKEN: z.string().optional()
+  POSTHOG_PROJECT_API_KEY: z.string().optional(),
+  NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
+  POSTHOG_HOST: z.string().url().optional(),
+  NEXT_PUBLIC_POSTHOG_HOST: z.string().url().optional(),
+  POSTHOG_PROJECT_SLUG: z.string().optional(),
+  NEXT_PUBLIC_POSTHOG_PROJECT_SLUG: z.string().optional(),
+  POSTHOG_ALLOCATION: z.enum(["shared-incubator", "dedicated"]).optional(),
+  POSTHOG_SHARED_PROJECT_NAME: z.string().optional()
 });
 
 export const env = envSchema.parse(process.env);
@@ -329,42 +735,59 @@ export type ObservabilityContext = {
   route?: string;
   jobId?: string;
   stripeEventId?: string;
+  incidentId?: string;
 };
 
-export function observabilityTags(context: ObservabilityContext = {}) {
+export function observabilityProperties(context: ObservabilityContext = {}) {
   return {
-    environment: deployment.environment,
+    project_slug: env.POSTHOG_PROJECT_SLUG ?? deployment.project,
+    app_environment: deployment.environment,
     preview_id: deployment.previewId,
     github_pr: deployment.githubPrNumber,
     git_branch: deployment.gitBranch,
     git_sha: deployment.gitSha,
+    posthog_allocation: env.POSTHOG_ALLOCATION ?? "shared-incubator",
     request_id: context.requestId,
     user_id: context.userId,
     route: context.route,
     job_id: context.jobId,
-    stripe_event_id: context.stripeEventId
+    stripe_event_id: context.stripeEventId,
+    incident_id: context.incidentId
   };
 }
 
 export function captureError(error: unknown, context: ObservabilityContext = {}) {
-  const tags = observabilityTags(context);
+  const properties = observabilityProperties(context);
 
-  if (!env.SENTRY_DSN && process.env.NODE_ENV !== "production") {
-    console.error("[observability]", { error, tags });
+  if (!env.POSTHOG_PROJECT_API_KEY && process.env.NODE_ENV !== "production") {
+    console.error("[observability:error]", { error, properties });
   }
 
-  return { error, tags };
+  return { error, properties };
 }
 
 export function trackEvent(name: string, properties: Record<string, unknown> = {}) {
   return {
     name,
     properties: {
+      ...observabilityProperties(),
       ...properties,
-      environment: deployment.environment,
-      preview_id: deployment.previewId,
-      git_sha: deployment.gitSha
     }
+  };
+}
+
+export function logInfo(message: string, properties: Record<string, unknown> = {}) {
+  return trackEvent("log.info", { message, ...properties });
+}
+
+export function identifyForReplay(distinctId: string, properties: Record<string, unknown> = {}) {
+  return trackEvent("user.identified", { distinct_id: distinctId, ...properties });
+}
+
+export function featureFlagContext(properties: Record<string, unknown> = {}) {
+  return {
+    ...observabilityProperties(),
+    ...properties
   };
 }
 `
@@ -458,12 +881,22 @@ model AuditEvent {
 }
 
 model WebhookEvent {
-  id          String   @id
-  provider    String
-  status      String   @default("pending")
-  processedAt DateTime?
-  payload     Json
-  createdAt   DateTime @default(now())
+  id             String    @id @default(cuid())
+  projectId      String
+  environment    String
+  provider       String
+  eventType      String
+  idempotencyKey String
+  status         String    @default("processing")
+  payload        Json
+  processedAt    DateTime?
+  failedAt       DateTime?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([provider, idempotencyKey])
+  @@index([projectId, environment, provider, status, createdAt])
 }
 `
     },

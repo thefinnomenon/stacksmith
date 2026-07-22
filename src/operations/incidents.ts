@@ -36,7 +36,10 @@ export interface DeploymentReference {
 }
 
 export type EvidenceReference =
-  | { type: "sentry-issue"; issueId: string; url: string; fingerprint?: string }
+  | { type: "posthog-issue"; issueId: string; url: string; fingerprint?: string }
+  | { type: "posthog-insight"; insightId: string; url: string }
+  | { type: "posthog-log-query"; query: string; url: string }
+  | { type: "posthog-replay"; replayId: string; url: string }
   | { type: "cloud-run-logs"; serviceId: string; timeRange: string; url?: string }
   | { type: "vercel-build"; deploymentId: string; url?: string }
   | { type: "job-run"; jobId: string; url?: string }
@@ -95,7 +98,9 @@ export function buildPreviewMetadata(input: {
 }) {
   return {
     environment: "preview" as const,
+    app_environment: "preview" as const,
     project_id: input.projectId,
+    project_slug: input.projectId,
     preview_id: input.previewId,
     github_pr: input.pullRequestNumber,
     git_branch: input.gitBranch,
@@ -105,16 +110,18 @@ export function buildPreviewMetadata(input: {
   };
 }
 
-export function buildSentryTags(input: {
+export function buildObservabilityTags(input: {
   environment: EnvironmentName;
   previewId?: string;
   pullRequestNumber?: number;
   gitBranch?: string;
   gitSha?: string;
   deploymentProvider?: string;
+  projectSlug?: string;
 }) {
   return {
-    environment: input.environment,
+    app_environment: input.environment,
+    project_slug: input.projectSlug,
     preview_id: input.previewId,
     github_pr: input.pullRequestNumber?.toString(),
     git_branch: input.gitBranch,

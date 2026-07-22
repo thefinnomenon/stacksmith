@@ -80,6 +80,12 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
     { id: "staging", name: `${manifest.slug}-staging`, risk: "reversible" as const },
     { id: "production", name: `${manifest.slug}-production`, risk: "production-write" as const }
   ];
+  const r2EventForwarder = manifest.providers.cloudflare.r2EventForwarder;
+  const r2EventsEnabled = manifest.providers.cloudflare.r2Events !== false;
+  const r2EventTypes = manifest.providers.cloudflare.r2EventTypes ?? ["object-create", "object-delete"];
+  const r2EventQueueName = r2EventForwarder?.queueName ?? `${manifest.slug}-r2-events`;
+  const r2EventWorkerName = r2EventForwarder?.workerName ?? `${manifest.slug}-r2-event-forwarder`;
+  const r2EventWorkerConfig = "workers/r2-event-forwarder/wrangler.jsonc";
   const corsFile = ".stacksmith/r2-cors.json";
   const domain = manifest.domain;
   const tunnelCommands: ExternalCommand[] = domain ? [
@@ -163,6 +169,128 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
       }
     }
   ];
+  const r2EventCommands: ExternalCommand[] = r2EventsEnabled ? [
+    {
+      provider: "cloudflare" as const,
+      id: "cloudflare.r2.events.queue",
+      description: "Create the Cloudflare Queue that receives R2 bucket event notifications.",
+      command: "wrangler",
+      args: ["queues", "create", r2EventQueueName],
+      risk: "reversible" as const,
+      requiresConfirmation: true,
+      env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+      check: {
+        description: `${r2EventQueueName} queue exists.`,
+        command: "wrangler",
+        args: ["queues", "info", r2EventQueueName],
+        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+      },
+      undo: {
+        description: "Delete the R2 event queue.",
+        command: "wrangler",
+        args: ["queues", "delete", r2EventQueueName],
+        risk: "destructive" as const,
+        requiresConfirmation: true,
+        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+        check: {
+          description: `${r2EventQueueName} queue exists.`,
+          command: "wrangler",
+          args: ["queues", "info", r2EventQueueName],
+          env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+        }
+      }
+    },
+    {
+      provider: "cloudflare" as const,
+      id: "cloudflare.r2.events.worker.deploy",
+      description: "Deploy the Cloudflare Worker that forwards R2 event batches to Vercel.",
+      command: "wrangler",
+      args: ["deploy", "--config", r2EventWorkerConfig],
+      risk: "reversible" as const,
+      requiresConfirmation: true,
+      env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+      check: {
+        description: `${r2EventWorkerName} Worker has deployments.`,
+        command: "wrangler",
+        args: ["deployments", "list", "--config", r2EventWorkerConfig],
+        stdoutIncludes: r2EventWorkerName,
+        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+      },
+      undo: {
+        description: "Delete the R2 event forwarder Worker.",
+        command: "wrangler",
+        args: ["delete", r2EventWorkerName],
+        risk: "destructive" as const,
+        requiresConfirmation: true,
+        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+      }
+    },
+    {
+      provider: "cloudflare" as const,
+      id: "cloudflare.r2.events.worker.secret",
+      description: "Set the shared R2 event webhook secret on the forwarder Worker.",
+      command: "wrangler",
+      args: ["secret", "put", "R2_EVENT_WEBHOOK_SECRET", "--config", r2EventWorkerConfig],
+      risk: "reversible" as const,
+      requiresConfirmation: true,
+      env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "R2_EVENT_WEBHOOK_SECRET"],
+      stdinFromEnv: "R2_EVENT_WEBHOOK_SECRET",
+      check: {
+        description: "R2_EVENT_WEBHOOK_SECRET exists on the forwarder Worker.",
+        command: "wrangler",
+        args: ["secret", "list", "--config", r2EventWorkerConfig],
+        stdoutIncludes: "R2_EVENT_WEBHOOK_SECRET",
+        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+      },
+      undo: {
+        description: "Delete the R2 event webhook secret from the forwarder Worker.",
+        command: "wrangler",
+        args: ["secret", "delete", "R2_EVENT_WEBHOOK_SECRET", "--config", r2EventWorkerConfig],
+        risk: "destructive" as const,
+        requiresConfirmation: true,
+        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+        check: {
+          description: "R2_EVENT_WEBHOOK_SECRET exists on the forwarder Worker.",
+          command: "wrangler",
+          args: ["secret", "list", "--config", r2EventWorkerConfig],
+          stdoutIncludes: "R2_EVENT_WEBHOOK_SECRET",
+          env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+        }
+      }
+    },
+    ...buckets.flatMap((bucket) => r2EventTypes.map((eventType) => ({
+      provider: "cloudflare" as const,
+      id: `cloudflare.r2.events.notification.${bucket.id}.${eventType}`,
+      description: `Forward ${eventType} notifications from ${bucket.name} to the R2 event queue.`,
+      command: "wrangler",
+      args: ["r2", "bucket", "notification", "create", bucket.name, "--event-type", eventType, "--queue", r2EventQueueName],
+      risk: bucket.risk,
+      requiresConfirmation: true,
+      env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+      check: {
+        description: `${bucket.name} has an R2 notification rule for ${eventType}.`,
+        command: "wrangler",
+        args: ["r2", "bucket", "notification", "list", bucket.name],
+        stdoutIncludes: r2EventQueueName,
+        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+      },
+      undo: {
+        description: `Delete R2 notification rules for ${bucket.name} that target ${r2EventQueueName}.`,
+        command: "wrangler",
+        args: ["r2", "bucket", "notification", "delete", bucket.name, "--queue", r2EventQueueName],
+        risk: "destructive" as const,
+        requiresConfirmation: true,
+        env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+        check: {
+          description: `${bucket.name} has R2 notification rules for ${r2EventQueueName}.`,
+          command: "wrangler",
+          args: ["r2", "bucket", "notification", "list", bucket.name],
+          stdoutIncludes: r2EventQueueName,
+          env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+        }
+      }
+    })))
+  ] : [];
 
   return [
     ...(domain ? [
@@ -314,6 +442,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         }
       }
     ]),
+    ...r2EventCommands,
     ...(domain ? [
       {
         provider: "cloudflare" as const,

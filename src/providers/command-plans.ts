@@ -1,5 +1,6 @@
 import type { ExternalCommand } from "../core/commands.js";
-import type { ProjectManifest, ProviderId } from "../core/types.js";
+import { envContract } from "../core/env-contract.js";
+import type { EnvironmentName, ProjectManifest, ProviderId } from "../core/types.js";
 import { cloudflareCommandPlan } from "./cloudflare-plan.js";
 import { cloudRunProjectId, cloudRunRegion } from "./cloud-run-project.js";
 
@@ -13,6 +14,9 @@ export function providerCommandPlan(provider: ProviderId, manifest: ProjectManif
 
     case "cloud-run":
       return cloudRunCommandPlan(manifest);
+
+    case "prisma-postgres":
+      return prismaPostgresCommandPlan(manifest);
 
     case "cloudflare":
       return cloudflareCommandPlan(manifest);
@@ -205,17 +209,73 @@ function githubRepoShell(manifest: ProjectManifest): string {
 
 function vercelCommandPlan(manifest: ProjectManifest): ExternalCommand[] {
   const provider = "vercel" as const;
+  const scopeArgs = vercelScopeArgs(manifest);
+  const projectInspectArgs = ["project", "inspect", manifest.slug, ...scopeArgs];
+  const projectRemoveShell = [
+    "printf 'y\\n' |",
+    "vercel",
+    "project",
+    "remove",
+    shSingleQuote(manifest.slug),
+    ...scopeArgs.map(shSingleQuote)
+  ].join(" ");
 
   return [
+    {
+      provider,
+      id: "vercel.auth.check",
+      description: "Verify the Vercel CLI can access the selected account or team.",
+      command: "vercel",
+      args: ["whoami", ...scopeArgs],
+      risk: "read-only",
+      requiresConfirmation: false,
+      check: {
+        description: "Vercel CLI authentication is available.",
+        command: "vercel",
+        args: ["whoami", ...scopeArgs]
+      },
+      undo: {
+        description: "No undo is needed for a read-only Vercel authentication check.",
+        command: "stacksmith",
+        args: ["noop", "vercel.auth.check"],
+        risk: "read-only",
+        requiresConfirmation: false
+      }
+    },
+    {
+      provider,
+      id: "vercel.project.create",
+      description: "Create the Vercel project if it does not already exist.",
+      command: "vercel",
+      args: ["project", "add", manifest.slug, ...scopeArgs],
+      risk: "reversible",
+      requiresConfirmation: true,
+      check: {
+        description: "Vercel project exists.",
+        command: "vercel",
+        args: projectInspectArgs
+      },
+      undo: {
+        description: "Delete the Vercel project.",
+        command: "sh",
+        args: ["-c", projectRemoveShell],
+        risk: "destructive",
+        requiresConfirmation: true,
+        check: {
+          description: "Vercel project exists.",
+          command: "vercel",
+          args: projectInspectArgs
+        }
+      }
+    },
     {
       provider,
       id: "vercel.project.link",
       description: "Link or create the Vercel project.",
       command: "vercel",
-      args: ["link", "--project", manifest.slug, "--yes"],
+      args: ["link", "--project", manifest.slug, "--yes", ...vercelTeamLinkArgs(manifest)],
       risk: "reversible",
       requiresConfirmation: true,
-      env: ["VERCEL_TOKEN"],
       check: {
         description: "Local Vercel project link exists.",
         command: "test",
@@ -229,7 +289,156 @@ function vercelCommandPlan(manifest: ProjectManifest): ExternalCommand[] {
         requiresConfirmation: true
       }
     },
+    ...vercelDomainCommands(manifest),
     ...vercelEnvCommands(manifest)
+  ];
+}
+
+function prismaPostgresCommandPlan(manifest: ProjectManifest): ExternalCommand[] {
+  const provider = "prisma-postgres" as const;
+  const config = manifest.providers["prisma-postgres"];
+  const region = config.region ?? "iad1";
+  const billingPlan = config.billingPlan ?? "free";
+  const productId = "prisma-postgres";
+  const authFile = ".stacksmith/prisma-authorization.json";
+  const databaseFile = ".stacksmith/prisma-database.json";
+  const connectionFile = ".stacksmith/prisma-connection.json";
+
+  const authorizeScript = [
+    "const fs = await import('node:fs/promises');",
+    "const teamId = process.env.VERCEL_TEAM_ID;",
+    "const integrationConfigurationId = process.env.PRISMA_INTEGRATION_CONFIG_ID;",
+    `const productId = process.env.PRISMA_PRODUCT_ID || ${JSON.stringify(productId)};`,
+    `const billingPlanId = process.env.PRISMA_BILLING_PLAN || ${JSON.stringify(billingPlan)};`,
+    `const region = process.env.PRISMA_POSTGRES_REGION || ${JSON.stringify(region)};`,
+    "const response = await fetch(`https://api.vercel.com/v1/integrations/billing/authorization?teamId=${teamId}`, {",
+    "  method: 'POST',",
+    "  headers: { Authorization: `Bearer ${process.env.VERCEL_TOKEN}`, 'Content-Type': 'application/json' },",
+    "  body: JSON.stringify({",
+    "    integrationIdOrSlug: 'prisma',",
+    "    productId,",
+    "    billingPlanId,",
+    "    metadata: JSON.stringify({ region }),",
+    "    integrationConfigurationId",
+    "  })",
+    "});",
+    "if (!response.ok) throw new Error(`Prisma billing authorization failed: ${response.status} ${await response.text()}`);",
+    "await fs.mkdir('.stacksmith', { recursive: true });",
+    `await fs.writeFile(${JSON.stringify(authFile)}, JSON.stringify(await response.json(), null, 2) + '\\n');`
+  ].join(" ");
+
+  const createDatabaseScript = [
+    "const fs = await import('node:fs/promises');",
+    "const authorizationData = JSON.parse(await fs.readFile('.stacksmith/prisma-authorization.json', 'utf8'));",
+    "const authorization = authorizationData.authorization ?? authorizationData;",
+    "const teamId = process.env.VERCEL_TEAM_ID;",
+    "const configId = process.env.PRISMA_INTEGRATION_CONFIG_ID || authorization.integrationConfigurationId;",
+    "const authorizationId = process.env.PRISMA_AUTHORIZATION_ID || authorization.id;",
+    `const productId = process.env.PRISMA_PRODUCT_ID || ${JSON.stringify(productId)};`,
+    `const billingPlanId = process.env.PRISMA_BILLING_PLAN || ${JSON.stringify(billingPlan)};`,
+    `const region = process.env.PRISMA_POSTGRES_REGION || ${JSON.stringify(region)};`,
+    "const response = await fetch(`https://api.vercel.com/v1/storage/stores/integration?teamId=${teamId}`, {",
+    "  method: 'POST',",
+    "  headers: { Authorization: `Bearer ${process.env.VERCEL_TOKEN}`, 'Content-Type': 'application/json' },",
+    "  body: JSON.stringify({",
+    "    metadata: { region },",
+    "    billingPlanId,",
+    `    name: ${JSON.stringify(`${manifest.slug}-production`)},`,
+    "    integrationConfigurationId: configId,",
+    "    integrationProductIdOrSlug: productId,",
+    "    authorizationId,",
+    "    source: 'marketplace'",
+    "  })",
+    "});",
+    "if (!response.ok) throw new Error(`Prisma database creation failed: ${response.status} ${await response.text()}`);",
+    `await fs.writeFile(${JSON.stringify(databaseFile)}, JSON.stringify(await response.json(), null, 2) + '\\n');`
+  ].join(" ");
+
+  const connectDatabaseScript = [
+    "const fs = await import('node:fs/promises');",
+    "const vercelProject = JSON.parse(await fs.readFile('.vercel/project.json', 'utf8'));",
+    "const databaseData = JSON.parse(await fs.readFile('.stacksmith/prisma-database.json', 'utf8'));",
+    "const store = databaseData.store ?? databaseData;",
+    "const teamId = process.env.VERCEL_TEAM_ID;",
+    "const projectId = process.env.VERCEL_PROJECT_ID || vercelProject.projectId;",
+    "const configId = process.env.PRISMA_INTEGRATION_CONFIG_ID;",
+    `const productId = process.env.PRISMA_PRODUCT_ID || ${JSON.stringify(productId)};`,
+    "const response = await fetch(`https://api.vercel.com/v1/integrations/installations/${configId}/products/${productId}/resources/${store.id}/connections?teamId=${teamId}`, {",
+    "  method: 'POST',",
+    "  headers: { Authorization: `Bearer ${process.env.VERCEL_TOKEN}`, 'Content-Type': 'application/json' },",
+    "  body: JSON.stringify({ projectId })",
+    "});",
+    "if (!response.ok) throw new Error(`Prisma database connection failed: ${response.status} ${await response.text()}`);",
+    `await fs.writeFile(${JSON.stringify(connectionFile)}, JSON.stringify({ projectId, storeId: store.id, connectedAt: new Date().toISOString() }, null, 2) + '\\n');`
+  ].join(" ");
+
+  return [
+    {
+      provider,
+      id: "prisma-postgres.vercel.integration.authorize",
+      description: "Authorize Prisma Postgres billing for the Vercel Marketplace integration.",
+      command: "node",
+      args: ["--input-type=module", "--eval", authorizeScript],
+      risk: "production-write",
+      requiresConfirmation: true,
+      env: ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "PRISMA_INTEGRATION_CONFIG_ID"],
+      check: {
+        description: "Prisma Vercel Marketplace authorization response is recorded.",
+        command: "test",
+        args: ["-f", authFile]
+      },
+      undo: {
+        description: "Prisma billing authorizations are not deleted by Stacksmith yet; remove the marketplace authorization in Vercel if needed.",
+        command: "stacksmith",
+        args: ["noop", "prisma-postgres.vercel.integration.authorize"],
+        risk: "read-only",
+        requiresConfirmation: false
+      }
+    },
+    {
+      provider,
+      id: "prisma-postgres.vercel.database.create",
+      description: "Create the Prisma Postgres production database through Vercel Marketplace APIs.",
+      command: "node",
+      args: ["--input-type=module", "--eval", createDatabaseScript],
+      risk: "production-write",
+      requiresConfirmation: true,
+      env: ["VERCEL_TOKEN", "VERCEL_TEAM_ID"],
+      check: {
+        description: "Prisma Postgres database response is recorded.",
+        command: "test",
+        args: ["-f", databaseFile]
+      },
+      undo: {
+        description: "Prisma database deletion is not implemented in Stacksmith yet; delete the marketplace store from Vercel/Prisma before rerunning destructive tests.",
+        command: "stacksmith",
+        args: ["noop", "prisma-postgres.vercel.database.create"],
+        risk: "read-only",
+        requiresConfirmation: false
+      }
+    },
+    {
+      provider,
+      id: "prisma-postgres.vercel.database.connect",
+      description: "Connect the Prisma Postgres database to the local Vercel project for env injection.",
+      command: "node",
+      args: ["--input-type=module", "--eval", connectDatabaseScript],
+      risk: "production-write",
+      requiresConfirmation: true,
+      env: ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "PRISMA_INTEGRATION_CONFIG_ID"],
+      check: {
+        description: "Prisma Postgres Vercel connection response is recorded.",
+        command: "test",
+        args: ["-f", connectionFile]
+      },
+      undo: {
+        description: "Prisma database disconnection is not implemented in Stacksmith yet; remove the resource connection in Vercel if needed.",
+        command: "stacksmith",
+        args: ["noop", "prisma-postgres.vercel.database.connect"],
+        risk: "read-only",
+        requiresConfirmation: false
+      }
+    }
   ];
 }
 
@@ -483,43 +692,215 @@ function cloudRunCommandPlan(manifest: ProjectManifest): ExternalCommand[] {
   ];
 }
 
-const vercelEnvMappings = [
-  ["APP_URL", "production"],
-  ["API_URL", "production"],
-  ["FILES_URL", "production"],
-  ["DATABASE_URL", "production"],
-  ["DIRECT_DATABASE_URL", "production"],
-  ["NEXT_PUBLIC_SENTRY_DSN", "production"],
-  ["NEXT_PUBLIC_MIXPANEL_TOKEN", "production"]
-] as const;
+const vercelStacksmithEnvironments: EnvironmentName[] = ["development", "preview", "staging", "production"];
+const dynamicPreviewVariables = new Set(["PREVIEW_ID", "GITHUB_PR_NUMBER", "GIT_BRANCH", "GIT_SHA"]);
+const externallySuppliedEnvVariables = new Set([
+  "DATABASE_URL",
+  "DIRECT_DATABASE_URL",
+  "R2_ACCOUNT_ID",
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "R2_ENDPOINT",
+  "R2_EVENT_WEBHOOK_SECRET",
+  "RESEND_API_KEY",
+  "POSTHOG_PROJECT_API_KEY",
+  "NEXT_PUBLIC_POSTHOG_KEY",
+  "SLACK_ALERTS_CHANNEL_ID"
+]);
+const generatedPreviewOverrides: Record<string, string> = {
+  R2_PREFIX: "previews/{previewId}/"
+};
+
+function vercelScopeArgs(manifest: ProjectManifest): string[] {
+  return manifest.providers.vercel.team ? ["--scope", manifest.providers.vercel.team] : [];
+}
+
+function vercelTeamLinkArgs(manifest: ProjectManifest): string[] {
+  return manifest.providers.vercel.team ? ["--team", manifest.providers.vercel.team] : [];
+}
+
+function vercelEnvironmentArgs(environment: EnvironmentName): string[] {
+  if (environment === "staging") {
+    return ["preview", "staging"];
+  }
+
+  if (environment === "production") {
+    return ["production"];
+  }
+
+  if (environment === "development") {
+    return ["development"];
+  }
+
+  return ["preview"];
+}
+
+function vercelEnvCheckArgs(environment: EnvironmentName): string[] {
+  return ["env", "list", ...vercelEnvironmentArgs(environment)];
+}
+
+function vercelEnvAddArgs(name: string, environment: EnvironmentName): string[] {
+  return ["env", "add", name, ...vercelEnvironmentArgs(environment)];
+}
+
+function vercelEnvRemoveArgs(name: string, environment: EnvironmentName): string[] {
+  return ["env", "remove", name, ...vercelEnvironmentArgs(environment)];
+}
+
+function generatedEnvValue(manifest: ProjectManifest, environment: EnvironmentName, name: string): string | undefined {
+  if (externallySuppliedEnvVariables.has(name)) {
+    return undefined;
+  }
+
+  if (environment === "preview" && generatedPreviewOverrides[name]) {
+    return generatedPreviewOverrides[name];
+  }
+
+  const variable = envContract.find((candidate) => candidate.name === name);
+  const example = variable?.example(manifest, environment);
+
+  return example ? example : undefined;
+}
+
+function vercelEnvNames(environment: EnvironmentName): string[] {
+  return envContract
+    .filter((variable) => variable.requiredIn.includes(environment))
+    .map((variable) => variable.name)
+    .filter((name) => !(environment === "preview" && dynamicPreviewVariables.has(name)));
+}
+
+function vercelDomainCommands(manifest: ProjectManifest): ExternalCommand[] {
+  if (!manifest.domain || manifest.domainMode === "free") {
+    return [];
+  }
+
+  const provider = "vercel" as const;
+  const scopeArgs = vercelScopeArgs(manifest);
+
+  return [
+    {
+      provider,
+      id: "vercel.domain.add",
+      description: "Attach the project production domain to Vercel. DNS remains managed by Cloudflare.",
+      command: "vercel",
+      args: ["domains", "add", manifest.domain, manifest.slug, ...scopeArgs],
+      risk: "production-write",
+      requiresConfirmation: true,
+      check: {
+        description: "Vercel domain exists.",
+        command: "vercel",
+        args: ["domains", "inspect", manifest.domain, ...scopeArgs]
+      },
+      undo: {
+        description: "Remove the domain from Vercel. This does not change Cloudflare DNS.",
+        command: "vercel",
+        args: ["domains", "remove", manifest.domain, ...scopeArgs],
+        risk: "production-write",
+        requiresConfirmation: true,
+        check: {
+          description: "Vercel domain exists.",
+          command: "vercel",
+          args: ["domains", "inspect", manifest.domain, ...scopeArgs]
+        }
+      }
+    },
+    {
+      provider,
+      id: "vercel.domain.verify",
+      description: "Verify the Vercel production domain DNS configuration.",
+      command: "vercel",
+      args: ["domains", "verify", manifest.domain, ...scopeArgs],
+      risk: "read-only",
+      requiresConfirmation: false,
+      check: {
+        description: "Vercel domain is present for verification.",
+        command: "vercel",
+        args: ["domains", "inspect", manifest.domain, ...scopeArgs]
+      },
+      undo: {
+        description: "No undo is needed for a read-only Vercel domain verification.",
+        command: "stacksmith",
+        args: ["noop", "vercel.domain.verify"],
+        risk: "read-only",
+        requiresConfirmation: false
+      }
+    }
+  ];
+}
 
 function vercelEnvCommands(manifest: ProjectManifest): ExternalCommand[] {
-  return vercelEnvMappings.map(([name, environment]) => ({
+  const commands: ExternalCommand[] = [];
+
+  for (const environment of vercelStacksmithEnvironments) {
+    for (const name of vercelEnvNames(environment)) {
+      const generatedValue = generatedEnvValue(manifest, environment, name);
+      const risk = environment === "production" ? "production-write" as const : "reversible" as const;
+
+      commands.push({
+        provider: "vercel" as const,
+        id: `vercel.env.${environment}.${name}`,
+        description: generatedValue
+          ? `Set generated ${name} for the Stacksmith ${environment} environment in Vercel.`
+          : `Set secret ${name} for the Stacksmith ${environment} environment in Vercel from local env.`,
+        command: "vercel",
+        args: vercelEnvAddArgs(name, environment),
+        risk,
+        requiresConfirmation: true,
+        env: generatedValue ? undefined : [name],
+        stdin: generatedValue,
+        stdinFromEnv: generatedValue ? undefined : name,
+        check: {
+          description: `${name} exists in the Stacksmith ${environment} environment on Vercel.`,
+          command: "vercel",
+          args: vercelEnvCheckArgs(environment),
+          stdoutIncludes: name
+        },
+        undo: {
+          description: `Remove ${name} from the Stacksmith ${environment} environment on Vercel.`,
+          command: "vercel",
+          args: vercelEnvRemoveArgs(name, environment),
+          risk,
+          requiresConfirmation: true,
+          stdin: "y\n",
+          check: {
+            description: `${name} exists in the Stacksmith ${environment} environment on Vercel.`,
+            command: "vercel",
+            args: vercelEnvCheckArgs(environment),
+            stdoutIncludes: name
+          }
+        }
+      });
+    }
+  }
+
+  commands.push({
     provider: "vercel" as const,
-    id: `vercel.env.${environment}.${name}`,
-    description: `Set ${name} for the Vercel ${environment} environment from local env.`,
+    id: "vercel.env.pull.development",
+    description: "Pull Vercel development environment variables into .env.local.",
     command: "vercel",
-    args: ["env", "add", name, environment],
-    risk: environment === "production" ? "production-write" as const : "reversible" as const,
+    args: ["env", "pull", ".env.local"],
+    risk: "reversible",
     requiresConfirmation: true,
-    env: ["VERCEL_TOKEN", name],
-    stdinFromEnv: name,
     check: {
-      description: `${name} exists in the Vercel ${environment} environment.`,
-      command: "vercel",
-      args: ["env", "ls", environment],
-      stdoutIncludes: name,
-      env: ["VERCEL_TOKEN"]
+      description: ".env.local exists.",
+      command: "test",
+      args: ["-f", ".env.local"]
     },
     undo: {
-      description: `Remove ${name} from the Vercel ${environment} environment.`,
-      command: "vercel",
-      args: ["env", "rm", name, environment, "--yes"],
-      risk: environment === "production" ? "production-write" as const : "reversible" as const,
+      description: "Remove the pulled .env.local file.",
+      command: "rm",
+      args: ["-f", ".env.local"],
+      risk: "destructive",
       requiresConfirmation: true,
-      env: ["VERCEL_TOKEN"]
+      check: {
+        description: ".env.local exists.",
+        command: "test",
+        args: ["-f", ".env.local"]
+      }
     }
-  }));
+  });
+
+  return commands;
 }
 
 export function allProviderCommandPlans(manifest: ProjectManifest): ExternalCommand[] {

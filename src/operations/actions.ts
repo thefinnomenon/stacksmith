@@ -1,5 +1,5 @@
 import type { EnvironmentName } from "../core/types.js";
-import type { Incident } from "./incidents.js";
+import type { EvidenceReference, Incident } from "./incidents.js";
 
 export interface ActionContext {
   actor: {
@@ -35,18 +35,22 @@ function notImplemented(id: string, message: string): ActionDefinition["execute"
   });
 }
 
+function hasPostHogUrl(evidence: EvidenceReference): evidence is EvidenceReference & { url: string } {
+  return evidence.type.startsWith("posthog-") && "url" in evidence && typeof evidence.url === "string";
+}
+
 export const actionRegistry: ActionDefinition[] = [
   {
-    id: "incident.open_sentry",
-    label: "Open Sentry",
-    description: "Return the linked Sentry issue URL for an incident.",
+    id: "incident.open_posthog",
+    label: "Open PostHog",
+    description: "Return the linked PostHog issue, replay, insight, or log query URL for an incident.",
     risk: "read-only",
     allowedEnvironments: ["development", "preview", "staging", "production"],
     execute: async (context) => {
-      const sentry = context.incident?.evidence.find((item) => item.type === "sentry-issue");
-      return sentry
-        ? { id: "incident.open_sentry", status: "completed", message: sentry.url }
-        : { id: "incident.open_sentry", status: "rejected", message: "Incident has no Sentry evidence." };
+      const posthog = context.incident?.evidence.find(hasPostHogUrl);
+      return posthog
+        ? { id: "incident.open_posthog", status: "completed", message: posthog.url }
+        : { id: "incident.open_posthog", status: "rejected", message: "Incident has no PostHog evidence." };
     }
   },
   {
@@ -58,7 +62,7 @@ export const actionRegistry: ActionDefinition[] = [
     execute: async (context) => ({
       id: "incident.view_logs",
       status: "completed",
-      message: `Found ${context.incident?.evidence.filter((item) => item.type.endsWith("logs") || item.type === "vercel-build").length ?? 0} log references.`
+      message: `Found ${context.incident?.evidence.filter((item) => item.type.endsWith("logs") || item.type === "posthog-log-query" || item.type === "vercel-build").length ?? 0} log references.`
     })
   },
   {

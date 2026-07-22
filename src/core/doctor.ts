@@ -31,8 +31,7 @@ const providerTools: Partial<Record<ProviderId, string[]>> = {
   cloudflare: ["wrangler", "cloudflared"],
   resend: [],
   stripe: ["stripe"],
-  sentry: [],
-  mixpanel: [],
+  posthog: [],
   slack: []
 };
 
@@ -42,8 +41,7 @@ const providerEnv: Partial<Record<ProviderId, string[]>> = {
   cloudflare: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
   resend: ["RESEND_API_KEY"],
   stripe: ["STRIPE_SECRET_KEY"],
-  sentry: ["SENTRY_AUTH_TOKEN", "SENTRY_ORG"],
-  mixpanel: ["MIXPANEL_SERVICE_ACCOUNT_USERNAME", "MIXPANEL_SERVICE_ACCOUNT_SECRET"],
+  posthog: ["POSTHOG_PROJECT_API_KEY", "POSTHOG_HOST"],
   slack: ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"]
 };
 

@@ -2,10 +2,9 @@ import type { ProviderAdapter, ProviderId } from "../core/types.js";
 import { cloudRunProvider } from "./cloud-run.js";
 import { cloudflareProvider } from "./cloudflare.js";
 import { githubProvider } from "./github.js";
-import { mixpanelProvider } from "./mixpanel.js";
+import { posthogProvider } from "./posthog.js";
 import { prismaProvider } from "./prisma.js";
 import { resendProvider } from "./resend.js";
-import { sentryProvider } from "./sentry.js";
 import { slackProvider } from "./slack.js";
 import { stripeProvider } from "./stripe.js";
 import { vercelProvider } from "./vercel.js";
@@ -18,8 +17,7 @@ export const providers: ProviderAdapter[] = [
   cloudflareProvider,
   resendProvider,
   stripeProvider,
-  sentryProvider,
-  mixpanelProvider,
+  posthogProvider,
   slackProvider
 ];
 

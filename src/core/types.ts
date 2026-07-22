@@ -8,8 +8,7 @@ export type ProviderId =
   | "cloudflare"
   | "resend"
   | "stripe"
-  | "sentry"
-  | "mixpanel"
+  | "posthog"
   | "slack";
 
 export type ChangeAction = "create" | "update" | "noop" | "delete";
@@ -41,8 +40,7 @@ export interface PreviewConfig {
   backend: "isolated" | "shared-staging" | "disabled";
   storage: "staging-prefix" | "disabled";
   stripe: "router" | "disabled";
-  sentry: "tagged" | "disabled";
-  mixpanel: "disabled" | "tagged";
+  observability: "posthog-tagged" | "disabled";
 }
 
 export interface ProviderConfig {
@@ -62,17 +60,44 @@ export interface ProvidersConfig {
     jobs?: boolean;
     scheduler?: boolean;
   };
-  "prisma-postgres": ProviderConfig & { previewStrategy?: PreviewConfig["database"] };
+  "prisma-postgres": ProviderConfig & {
+    via?: "vercel-marketplace" | "prisma-direct";
+    region?: string;
+    billingPlan?: "free" | "pro" | "business" | "enterprise" | "partnerEntry";
+    previewStrategy?: PreviewConfig["database"];
+    previewProvisioning?: "vercel-preview-env" | "github-actions-management-api";
+    acceleration?: {
+      connectionPooling: boolean;
+      queryCache: "optional-per-query" | "disabled";
+    };
+  };
   cloudflare: ProviderConfig & {
     registrar?: boolean;
     dns?: boolean;
     r2?: boolean;
     tunnel?: boolean;
+    r2Events?: boolean;
+    r2EventTypes?: Array<"object-create" | "object-delete">;
+    r2EventForwarder?: {
+      queueName?: string;
+      workerName?: string;
+      endpointPath?: string;
+    };
   };
   resend: ProviderConfig & { inboundForwarding?: boolean };
   stripe: ProviderConfig & { previewRouter?: boolean };
-  sentry: ProviderConfig & { previewTagging?: boolean };
-  mixpanel: ProviderConfig & { enabledInPreview?: boolean };
+  posthog: ProviderConfig & {
+    allocation?: "shared-incubator" | "dedicated";
+    sharedProjectName?: string;
+    projectName?: string;
+    analytics?: boolean;
+    errorTracking?: boolean;
+    logs?: boolean;
+    sessionReplay?: "disabled" | "production-sampled" | "all";
+    flags?: boolean;
+    previewTagging?: boolean;
+    slackRoutingTags?: boolean;
+  };
   slack: ProviderConfig & { workspace?: string; activityChannel?: string; alertsChannel?: string };
 }
 
@@ -89,7 +114,7 @@ export interface OperationsConfig {
     productionCreatesFixPr: boolean;
   };
   slackActions: {
-    openSentry: boolean;
+    openPostHog: boolean;
     viewLogs: boolean;
     retryJob: boolean;
     retryDeployment: boolean;

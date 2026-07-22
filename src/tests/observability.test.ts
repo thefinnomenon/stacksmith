@@ -1,48 +1,59 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mixpanelRetentionEndpoint, plannedMixpanelMetric } from "../observability/mixpanel.js";
-import { buildSentrySearchQuery, normalizeSentryIssue, sentryIssueEndpoint } from "../observability/sentry.js";
+import {
+  buildPostHogFilterQuery,
+  normalizePostHogIssue,
+  plannedPostHogMetric,
+  posthogIssueEndpoint,
+  posthogLogsEndpoint,
+  posthogReplayUrl
+} from "../observability/posthog.js";
 
-test("Sentry facade builds preview-aware issue queries", () => {
-  const query = buildSentrySearchQuery({
-    organizationSlug: "acme",
+test("PostHog facade builds project and preview aware issue queries", () => {
+  const query = buildPostHogFilterQuery({
+    projectId: "123",
+    projectSlug: "facereel",
     environment: "preview",
     previewId: "pr-184",
     release: "abc123"
   });
 
-  assert.equal(query, "is:unresolved environment:preview preview_id:pr-184 release:abc123");
-  assert.match(sentryIssueEndpoint({ organizationSlug: "acme", previewId: "pr-184" }), /preview_id%3Apr-184/);
+  assert.equal(query, "project_slug:facereel app_environment:preview preview_id:pr-184 git_sha:abc123");
+  assert.match(
+    posthogIssueEndpoint({ projectId: "123", projectSlug: "facereel", previewId: "pr-184" }),
+    /preview_id%3Apr-184/
+  );
 });
 
-test("Sentry facade normalizes raw issue payloads", () => {
-  const issue = normalizeSentryIssue({
+test("PostHog facade normalizes raw issue payloads", () => {
+  const issue = normalizePostHogIssue({
     id: 123,
-    title: "Crash",
-    status: "unresolved",
-    tags: { preview_id: "pr-184" }
+    name: "Crash",
+    status: "active",
+    properties: { preview_id: "pr-184", project_slug: "facereel" }
   });
 
   assert.equal(issue.id, "123");
-  assert.equal(issue.tags.preview_id, "pr-184");
+  assert.equal(issue.title, "Crash");
+  assert.equal(issue.properties.preview_id, "pr-184");
 });
 
-test("Mixpanel facade builds retention endpoints and planned metric shapes", () => {
-  const endpoint = mixpanelRetentionEndpoint({
-    projectId: "42",
+test("PostHog facade plans product metrics and log/replay references", () => {
+  const metric = plannedPostHogMetric({
+    projectId: "123",
+    projectSlug: "facereel",
+    question: "retention",
     fromDate: "2026-07-01",
-    toDate: "2026-07-16",
-    bornEvent: "Signup",
-    returningEvent: "Active",
+    toDate: "2026-07-22",
     environment: "production"
   });
 
-  assert.match(endpoint, /project_id=42/);
-  assert.match(endpoint, /retention_type=birth/);
-  assert.equal(plannedMixpanelMetric({
-    projectId: "42",
-    question: "retention",
-    fromDate: "2026-07-01",
-    toDate: "2026-07-16"
-  }).unit, "percent");
+  assert.equal(metric.source, "posthog");
+  assert.equal(metric.unit, "percent");
+  assert.equal((metric.query.filters as Record<string, unknown>).project_slug, "facereel");
+  assert.match(
+    posthogLogsEndpoint({ projectId: "123", projectSlug: "facereel", environment: "preview", previewId: "pr-184", query: "error" }),
+    /project_slug%3Afacereel/
+  );
+  assert.equal(posthogReplayUrl({ projectId: "123", projectSlug: "facereel", replayId: "0184" }), "/project/123/replay/0184");
 });

@@ -8,7 +8,7 @@ export type NotificationType =
   | "preview.ready"
   | "preview.failed"
   | "deployment.failed"
-  | "sentry.regression"
+  | "posthog.error_regression"
   | "stripe.payment_succeeded"
   | "stripe.webhook_failed"
   | "job.dead_lettered"

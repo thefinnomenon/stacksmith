@@ -6,15 +6,25 @@ Stacksmith is a local-first project bootstrap and operations control plane. It i
 
 The current repository is an MVP foundation. It intentionally does not perform real cloud provisioning yet.
 
+Default stack decision:
+
+- Web: Vercel.
+- Database: Prisma Postgres through the Vercel Marketplace, used with Prisma ORM.
+- File storage, object-event forwarding, domains, DNS, and development tunnels: Cloudflare R2, Queues/Workers, Registrar/DNS, and Tunnel.
+- Background jobs and long-running work: Google Cloud Run.
+- Email, observability/product data, payments, and notifications: Resend, PostHog, Stripe, and Slack.
+- PostHog allocation: new apps use a shared `stacksmith-incubator` PostHog project with mandatory `project_slug` and environment tags, then promote serious apps to dedicated PostHog projects.
+
 What exists:
 
 - TypeScript CLI with command-line and interactive `init`.
 - Declarative project manifest at `.stacksmith/project.json`.
 - Separate generated state file at `.stacksmith/state.json`.
 - Provider adapter lifecycle: `inspect`, `plan`, `apply`, `health`.
-- Scaffold adapters for GitHub, Vercel, Google Cloud Run, Prisma Postgres, Cloudflare, Resend, Stripe, Sentry, Mixpanel, and Slack.
+- Scaffold adapters for GitHub, Vercel, Google Cloud Run, Prisma Postgres, Cloudflare, Resend, Stripe, PostHog, and Slack.
 - Environment model for development, preview, staging, and production.
-- Preview metadata helpers and Sentry tag helpers.
+- Preview metadata helpers and PostHog observability tag helpers.
+- Generated Cloudflare R2 event forwarder Worker and signed Next webhook at `/api/webhook/cloudflare/r2`.
 - Unified incident, evidence, action registry, Slack action message, and Slack signature scaffolding.
 - Postgres schema for jobs, audit events, incidents, preview metadata, Stripe preview routing, and database-backed feature flags.
 - MCP-facing tool registry stub for future Codex access to incidents, evidence, health, and actions.
@@ -86,6 +96,16 @@ Before executing the Cloud Run billing step, authenticate with `gcloud` and set:
 export GOOGLE_CLOUD_BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX
 ```
 
+Prisma Postgres plans target the Vercel Marketplace integration. They prepare billing authorization, database creation, and project connection commands, but live deletion/disconnection is not implemented yet. Before testing them, install the Prisma integration in the target Vercel team and set:
+
+```bash
+export VERCEL_TOKEN=vercel_pat_...
+export VERCEL_TEAM_ID=team_...
+export PRISMA_INTEGRATION_CONFIG_ID=icfg_...
+export PRISMA_POSTGRES_REGION=iad1
+export PRISMA_BILLING_PLAN=free
+```
+
 Apply local scaffold state:
 
 ```bash
@@ -120,9 +140,9 @@ npm run dev -- create
 
 - **Blueprint**: the project manifest in `.stacksmith/project.json`.
 - **State**: generated provider identifiers and scaffold status in `.stacksmith/state.json`.
-- **Provider**: a lifecycle adapter for a platform such as GitHub, Vercel, Cloudflare, Sentry, or Slack.
+- **Provider**: a lifecycle adapter for a platform such as GitHub, Vercel, Cloudflare, PostHog, or Slack.
 - **Incident**: a normalized operational problem with evidence and available actions.
-- **Action**: a safe, auditable operation such as retrying a job or opening a Sentry issue.
+- **Action**: a safe, auditable operation such as retrying a job or opening a PostHog issue/log/replay.
 
 ## Phase 1 Boundary
 

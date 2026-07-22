@@ -125,8 +125,7 @@ export const defaultPreviewConfig: PreviewConfig = {
   backend: "isolated",
   storage: "staging-prefix",
   stripe: "router",
-  sentry: "tagged",
-  mixpanel: "disabled"
+  observability: "posthog-tagged"
 };
 
 export function defaultProviders(slug: string): ProvidersConfig {
@@ -141,12 +140,47 @@ export function defaultProviders(slug: string): ProvidersConfig {
       jobs: true,
       scheduler: true
     },
-    "prisma-postgres": { enabled: true, previewStrategy: "isolated" },
-    cloudflare: { enabled: true, registrar: true, dns: true, r2: true, tunnel: true },
+    "prisma-postgres": {
+      enabled: true,
+      via: "vercel-marketplace",
+      region: "iad1",
+      billingPlan: "free",
+      previewStrategy: "isolated",
+      previewProvisioning: "github-actions-management-api",
+      acceleration: {
+        connectionPooling: true,
+        queryCache: "optional-per-query"
+      }
+    },
+    cloudflare: {
+      enabled: true,
+      registrar: true,
+      dns: true,
+      r2: true,
+      tunnel: true,
+      r2Events: true,
+      r2EventTypes: ["object-create", "object-delete"],
+      r2EventForwarder: {
+        queueName: `${slug}-r2-events`,
+        workerName: `${slug}-r2-event-forwarder`,
+        endpointPath: "/api/webhook/cloudflare/r2"
+      }
+    },
     resend: { enabled: true, inboundForwarding: true },
     stripe: { enabled: true, previewRouter: true },
-    sentry: { enabled: true, previewTagging: true },
-    mixpanel: { enabled: true, enabledInPreview: false },
+    posthog: {
+      enabled: true,
+      allocation: "shared-incubator",
+      sharedProjectName: "stacksmith-incubator",
+      projectName: `${slug}-posthog`,
+      analytics: true,
+      errorTracking: true,
+      logs: true,
+      sessionReplay: "production-sampled",
+      flags: true,
+      previewTagging: true,
+      slackRoutingTags: true
+    },
     slack: { enabled: true, activityChannel: slug, alertsChannel: `${slug}-alerts` }
   };
 }
@@ -164,7 +198,7 @@ export const defaultOperations: OperationsConfig = {
     productionCreatesFixPr: true
   },
   slackActions: {
-    openSentry: true,
+    openPostHog: true,
     viewLogs: true,
     retryJob: true,
     retryDeployment: true,

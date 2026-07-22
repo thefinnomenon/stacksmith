@@ -159,6 +159,13 @@ export const envContract: EnvContractVariable[] = [
     example: () => ""
   },
   {
+    name: "R2_EVENT_WEBHOOK_SECRET",
+    visibility: "server",
+    requiredIn: ["development", "preview", "staging", "production"],
+    description: "Shared secret used to verify Cloudflare R2 event forwarder webhooks.",
+    example: () => ""
+  },
+  {
     name: "RESEND_API_KEY",
     visibility: "server",
     requiredIn: ["development", "preview", "staging", "production"],
@@ -173,32 +180,60 @@ export const envContract: EnvContractVariable[] = [
     example: (manifest) => manifest.domain ? `hello@${manifest.domain}` : `hello@${manifest.slug}.vercel.app`
   },
   {
-    name: "SENTRY_DSN",
+    name: "POSTHOG_PROJECT_API_KEY",
     visibility: "server",
-    requiredIn: ["preview", "staging", "production"],
-    description: "Server-side Sentry DSN.",
+    requiredIn: ["development", "preview", "staging", "production"],
+    description: "Server-side PostHog project API key.",
     example: () => ""
   },
   {
-    name: "NEXT_PUBLIC_SENTRY_DSN",
+    name: "NEXT_PUBLIC_POSTHOG_KEY",
     visibility: "public",
-    requiredIn: ["preview", "staging", "production"],
-    description: "Browser Sentry DSN.",
+    requiredIn: ["development", "preview", "staging", "production"],
+    description: "Browser PostHog project API key.",
     example: () => ""
   },
   {
-    name: "MIXPANEL_TOKEN",
+    name: "POSTHOG_HOST",
     visibility: "server",
-    requiredIn: ["staging", "production"],
-    description: "Server-side Mixpanel token.",
-    example: () => ""
+    requiredIn: ["development", "preview", "staging", "production"],
+    description: "PostHog API host.",
+    example: () => "https://us.i.posthog.com"
   },
   {
-    name: "NEXT_PUBLIC_MIXPANEL_TOKEN",
+    name: "NEXT_PUBLIC_POSTHOG_HOST",
     visibility: "public",
-    requiredIn: ["staging", "production"],
-    description: "Browser Mixpanel token.",
-    example: () => ""
+    requiredIn: ["development", "preview", "staging", "production"],
+    description: "Browser PostHog host.",
+    example: () => "https://us.i.posthog.com"
+  },
+  {
+    name: "POSTHOG_PROJECT_SLUG",
+    visibility: "server",
+    requiredIn: ["development", "preview", "staging", "production"],
+    description: "Project discriminator for shared incubator PostHog projects.",
+    example: (manifest) => manifest.slug
+  },
+  {
+    name: "NEXT_PUBLIC_POSTHOG_PROJECT_SLUG",
+    visibility: "public",
+    requiredIn: ["development", "preview", "staging", "production"],
+    description: "Browser project discriminator for shared incubator PostHog projects.",
+    example: (manifest) => manifest.slug
+  },
+  {
+    name: "POSTHOG_ALLOCATION",
+    visibility: "server",
+    requiredIn: ["development", "preview", "staging", "production"],
+    description: "PostHog project allocation policy.",
+    example: (manifest) => manifest.providers.posthog.allocation ?? "shared-incubator"
+  },
+  {
+    name: "POSTHOG_SHARED_PROJECT_NAME",
+    visibility: "server",
+    requiredIn: ["development", "preview", "staging", "production"],
+    description: "Shared PostHog incubator project name used until project promotion.",
+    example: (manifest) => manifest.providers.posthog.sharedProjectName ?? "stacksmith-incubator"
   },
   {
     name: "SLACK_ALERTS_CHANNEL_ID",

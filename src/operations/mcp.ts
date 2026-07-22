@@ -30,7 +30,7 @@ export const mcpTools: McpToolDescriptor[] = [
   },
   {
     name: "collect_incident_evidence",
-    description: "Refresh evidence from Sentry, Vercel, Cloud Run, GitHub, jobs, and health checks.",
+    description: "Refresh evidence from PostHog, Vercel, Cloud Run, GitHub, jobs, and health checks.",
     inputSchema: {
       type: "object",
       properties: { incidentId: { type: "string" } },
@@ -62,34 +62,49 @@ export const mcpTools: McpToolDescriptor[] = [
     }
   },
   {
-    name: "get_sentry_errors",
-    description: "Return normalized Sentry issues for a project, release, or preview.",
+    name: "get_posthog_errors",
+    description: "Return normalized PostHog issues for a project, release, or preview.",
     inputSchema: {
       type: "object",
       properties: {
-        organizationSlug: { type: "string" },
+        projectId: { type: "string" },
         projectSlug: { type: "string" },
         environment: { type: "string", enum: ["development", "preview", "staging", "production"] },
         previewId: { type: "string" },
         release: { type: "string" }
       },
-      required: ["organizationSlug"]
+      required: ["projectId"]
     }
   },
   {
-    name: "get_mixpanel_retention",
-    description: "Return retention metrics through the Mixpanel facade.",
+    name: "query_posthog_product_metrics",
+    description: "Return PostHog product metrics filtered by project slug and environment.",
     inputSchema: {
       type: "object",
       properties: {
         projectId: { type: "string" },
+        projectSlug: { type: "string" },
         fromDate: { type: "string" },
         toDate: { type: "string" },
-        bornEvent: { type: "string" },
-        returningEvent: { type: "string" },
+        question: { type: "string", enum: ["retention", "activation", "conversion", "active-users", "event-count"] },
         environment: { type: "string", enum: ["development", "preview", "staging", "production"] }
       },
-      required: ["projectId", "fromDate", "toDate", "bornEvent", "returningEvent"]
+      required: ["projectId", "projectSlug", "fromDate", "toDate", "question"]
+    }
+  },
+  {
+    name: "search_posthog_logs",
+    description: "Search PostHog logs with project and environment filters.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: { type: "string" },
+        projectSlug: { type: "string" },
+        environment: { type: "string", enum: ["development", "preview", "staging", "production"] },
+        previewId: { type: "string" },
+        query: { type: "string" }
+      },
+      required: ["projectId", "projectSlug", "query"]
     }
   }
 ];

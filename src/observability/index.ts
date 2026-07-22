@@ -1,2 +1,1 @@
-export * from "./sentry.js";
-export * from "./mixpanel.js";
+export * from "./posthog.js";

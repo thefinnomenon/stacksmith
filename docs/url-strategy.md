@@ -17,6 +17,20 @@ STRIPE_WEBHOOK_URL
 
 The application must use these values for navigation, auth, email links, webhooks, uploads, CORS, and observability.
 
+## Provider Ownership
+
+The default Stacksmith stack uses Vercel for web deployments, Prisma Postgres through the Vercel Marketplace for the database, and Cloudflare for URL-level infrastructure:
+
+```text
+app/staging/preview URLs -> Vercel
+api URLs                 -> Google Cloud Run
+files URLs               -> Cloudflare R2 custom domains
+dev tunnel URLs          -> Cloudflare Tunnel
+DNS/domain records       -> Cloudflare
+```
+
+That split keeps Vercel focused on the Next.js app while Cloudflare owns the stable hostnames needed for uploads, phone testing, social OAuth callbacks, and future domain promotion.
+
 ## Managed Domain Mode
 
 Managed mode is the fully seamless mode:

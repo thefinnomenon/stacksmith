@@ -21,12 +21,27 @@ test("provider command plans expose future external operations", () => {
   assert.equal(commands.some((command) => command.id === "github.repo.push"), true);
   assert.equal(commands.some((command) => command.id === "cloudflare.r2.dev"), true);
   assert.equal(commands.some((command) => command.id === "cloudflare.r2.cors.dev"), true);
+  assert.equal(commands.some((command) => command.id === "cloudflare.r2.events.queue"), true);
+  assert.equal(commands.some((command) => command.id === "cloudflare.r2.events.worker.deploy"), true);
+  assert.equal(commands.some((command) => command.id === "cloudflare.r2.events.notification.production.object-create"), true);
   assert.equal(commands.some((command) => command.id === "cloudflare.domain.check"), true);
   assert.equal(commands.some((command) => command.id === "cloud-run.project.create"), true);
   assert.equal(commands.some((command) => command.id === "cloud-run.billing.link"), true);
   assert.equal(commands.some((command) => command.id === "cloud-run.services.enable"), true);
   assert.equal(commands.some((command) => command.id === "cloud-run.artifact-registry.create"), true);
+  assert.equal(commands.some((command) => command.id === "prisma-postgres.vercel.integration.authorize"), true);
+  assert.equal(commands.some((command) => command.id === "prisma-postgres.vercel.database.create"), true);
+  assert.equal(commands.some((command) => command.id === "prisma-postgres.vercel.database.connect"), true);
+  assert.equal(commands.some((command) => command.id === "vercel.auth.check"), true);
+  assert.equal(commands.some((command) => command.id === "vercel.project.create"), true);
+  assert.equal(commands.some((command) => command.id === "vercel.project.link"), true);
+  assert.equal(commands.some((command) => command.id === "vercel.domain.add"), true);
+  assert.equal(commands.some((command) => command.id === "vercel.domain.verify"), true);
+  assert.equal(commands.some((command) => command.id === "vercel.env.development.APP_URL"), true);
+  assert.equal(commands.some((command) => command.id === "vercel.env.preview.APP_URL"), true);
+  assert.equal(commands.some((command) => command.id === "vercel.env.staging.APP_URL"), true);
   assert.equal(commands.some((command) => command.id === "vercel.env.production.APP_URL"), true);
+  assert.equal(commands.some((command) => command.id === "vercel.env.pull.development"), true);
   assert.equal(commands.filter((command) => command.risk !== "read-only").every((command) => command.requiresConfirmation), true);
   assert.equal(commands.every((command) => Boolean(command.undo)), true);
 });
@@ -117,6 +132,66 @@ test("Cloud Run commands target the manifest Google Cloud project", () => {
   assert.deepEqual(billing.env, ["GOOGLE_CLOUD_BILLING_ACCOUNT_ID"]);
   assert.equal(createProject.check?.args.includes("ss-facereel"), true);
   assert.equal(createProject.undo?.args.includes("ss-facereel"), true);
+});
+
+test("Prisma Postgres commands use the Vercel Marketplace integration", () => {
+  const manifest = createDefaultManifest({ name: "FaceReel" });
+  const commands = allProviderCommandPlans(manifest);
+  const authorize = commands.find((command) => command.id === "prisma-postgres.vercel.integration.authorize");
+  const createDatabase = commands.find((command) => command.id === "prisma-postgres.vercel.database.create");
+  const connect = commands.find((command) => command.id === "prisma-postgres.vercel.database.connect");
+
+  assert.ok(authorize);
+  assert.ok(createDatabase);
+  assert.ok(connect);
+  assert.deepEqual(authorize.env, ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "PRISMA_INTEGRATION_CONFIG_ID"]);
+  assert.deepEqual(createDatabase.env, ["VERCEL_TOKEN", "VERCEL_TEAM_ID"]);
+  assert.deepEqual(connect.env, ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "PRISMA_INTEGRATION_CONFIG_ID"]);
+  assert.equal(authorize.args.join(" ").includes("integrations/billing/authorization"), true);
+  assert.equal(createDatabase.args.join(" ").includes("storage/stores/integration"), true);
+  assert.equal(connect.args.join(" ").includes("resources/${store.id}/connections"), true);
+  assert.equal(createDatabase.args.join(" ").includes("facereel-production"), true);
+  assert.equal(createDatabase.args.join(" ").includes("source: 'marketplace'"), true);
+  assert.equal(createDatabase.undo?.description.includes("not implemented"), true);
+});
+
+test("Vercel commands create project spine and environment variables idempotently", () => {
+  const manifest = createDefaultManifest({ name: "FaceReel", domain: "facereel.com" });
+  manifest.providers.vercel.team = "finnternet";
+  const commands = allProviderCommandPlans(manifest);
+  const createProject = commands.find((command) => command.id === "vercel.project.create");
+  const linkProject = commands.find((command) => command.id === "vercel.project.link");
+  const domain = commands.find((command) => command.id === "vercel.domain.add");
+  const productionAppUrl = commands.find((command) => command.id === "vercel.env.production.APP_URL");
+  const stagingAppUrl = commands.find((command) => command.id === "vercel.env.staging.APP_URL");
+  const previewDatabase = commands.find((command) => command.id === "vercel.env.preview.DATABASE_URL");
+  const previewId = commands.find((command) => command.id === "vercel.env.preview.PREVIEW_ID");
+  const previewPrefix = commands.find((command) => command.id === "vercel.env.preview.R2_PREFIX");
+  const pull = commands.find((command) => command.id === "vercel.env.pull.development");
+
+  assert.ok(createProject);
+  assert.ok(linkProject);
+  assert.ok(domain);
+  assert.ok(productionAppUrl);
+  assert.ok(stagingAppUrl);
+  assert.ok(previewDatabase);
+  assert.equal(previewId, undefined);
+  assert.ok(previewPrefix);
+  assert.ok(pull);
+  assert.deepEqual(createProject.env, undefined);
+  assert.equal(createProject.args.includes("--scope"), true);
+  assert.equal(createProject.args.includes("finnternet"), true);
+  assert.equal(createProject.check?.args.join(" ").includes("project inspect facereel"), true);
+  assert.equal(createProject.undo?.check?.args.join(" ").includes("project inspect facereel"), true);
+  assert.equal(linkProject.args.includes("--team"), true);
+  assert.deepEqual(domain.args.slice(0, 4), ["domains", "add", "facereel.com", "facereel"]);
+  assert.deepEqual(productionAppUrl.env, undefined);
+  assert.equal(productionAppUrl.stdin, "https://facereel.com");
+  assert.deepEqual(stagingAppUrl.args, ["env", "add", "APP_URL", "preview", "staging"]);
+  assert.deepEqual(previewDatabase.env, ["DATABASE_URL"]);
+  assert.equal(previewDatabase.stdinFromEnv, "DATABASE_URL");
+  assert.equal(previewPrefix.stdin, "previews/{previewId}/");
+  assert.deepEqual(pull.args, ["env", "pull", ".env.local"]);
 });
 
 test("formatExternalCommand shell-quotes arguments with spaces", () => {

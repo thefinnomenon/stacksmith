@@ -49,8 +49,13 @@ export function planDomainPromotion(manifest: ProjectManifest, apexDomain: strin
       "AUTH_CALLBACK_URL",
       "EMAIL_LINK_BASE_URL",
       "STRIPE_WEBHOOK_URL",
-      "NEXT_PUBLIC_SENTRY_DSN",
-      "NEXT_PUBLIC_MIXPANEL_TOKEN"
+      "R2_EVENT_WEBHOOK_SECRET",
+      "NEXT_PUBLIC_POSTHOG_HOST",
+      "NEXT_PUBLIC_POSTHOG_KEY",
+      "NEXT_PUBLIC_POSTHOG_PROJECT_SLUG",
+      "POSTHOG_PROJECT_API_KEY",
+      "POSTHOG_HOST",
+      "POSTHOG_PROJECT_SLUG"
     ],
     providerActions: [
       "Create or verify Cloudflare zone and DNS records.",

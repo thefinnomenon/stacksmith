@@ -10,6 +10,11 @@ test("Cloudflare plan includes registrar, CORS, tunnel, and DNS commands", () =>
   assert.ok(commands.some((command) => command.id === "cloudflare.domain.search"));
   assert.ok(commands.some((command) => command.id === "cloudflare.domain.register" && command.risk === "production-write"));
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.cors.production"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.queue"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.worker.deploy"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.worker.secret"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.notification.production.object-create"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.notification.production.object-delete"));
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.custom-domain.production"));
   assert.ok(commands.some((command) => command.id === "cloudflare.dns.root"));
   assert.equal(commands.some((command) => command.args.some((arg) => arg.includes("facereel-production.r2.dev"))), false);
@@ -30,6 +35,7 @@ test("Cloudflare free mode skips registrar and DNS commands", () => {
   assert.equal(commands.some((command) => command.id.startsWith("cloudflare.domain.")), false);
   assert.equal(commands.some((command) => command.id.startsWith("cloudflare.dns.")), false);
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.cors.dev"));
+  assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.queue"));
   assert.ok(commands.some((command) => command.id === "cloudflare.tunnel.quick.web"));
   assert.equal(commands.some((command) => command.id === "cloudflare.tunnel.route.dev"), false);
 });

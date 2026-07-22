@@ -394,6 +394,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
           description: `Delete the ${bucket.id} R2 bucket.`,
           command: "wrangler",
           args: ["r2", "bucket", "delete", bucket.name],
+          stdin: "y\n",
           risk: "destructive" as const,
           requiresConfirmation: true,
           env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
@@ -404,7 +405,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         id: `cloudflare.r2.cors.${bucket.id}`,
         description: `Apply CORS policy to the ${bucket.id} R2 bucket.`,
         command: "wrangler",
-        args: ["r2", "bucket", "cors", "set", bucket.name, "--file", corsFile],
+        args: ["r2", "bucket", "cors", "set", bucket.name, "--file", corsFile, "--force"],
         risk: bucket.risk,
         requiresConfirmation: true,
         env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
@@ -418,7 +419,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
         undo: {
           description: `Delete the ${bucket.id} R2 CORS policy.`,
           command: "wrangler",
-          args: ["r2", "bucket", "cors", "delete", bucket.name],
+          args: ["r2", "bucket", "cors", "delete", bucket.name, "--force"],
           risk: bucket.risk,
           requiresConfirmation: true,
           env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]

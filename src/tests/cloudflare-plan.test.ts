@@ -10,6 +10,13 @@ test("Cloudflare plan includes registrar, CORS, tunnel, and DNS commands", () =>
   assert.ok(commands.some((command) => command.id === "cloudflare.domain.search"));
   assert.ok(commands.some((command) => command.id === "cloudflare.domain.register" && command.risk === "production-write"));
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.cors.production"));
+  const createDevBucket = commands.find((command) => command.id === "cloudflare.r2.dev");
+  const configureDevCors = commands.find((command) => command.id === "cloudflare.r2.cors.dev");
+  assert.ok(createDevBucket);
+  assert.equal(createDevBucket.undo?.stdin, "y\n");
+  assert.ok(configureDevCors);
+  assert.equal(configureDevCors.args.includes("--force"), true);
+  assert.equal(configureDevCors.undo?.args.includes("--force"), true);
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.queue"));
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.worker.deploy"));
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.worker.secret"));

@@ -37,7 +37,6 @@ const providerTools: Partial<Record<ProviderId, string[]>> = {
 };
 
 const providerEnv: Partial<Record<ProviderId, string[]>> = {
-  github: ["GITHUB_TOKEN"],
   vercel: ["VERCEL_TOKEN"],
   "prisma-postgres": ["DATABASE_URL"],
   cloudflare: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
@@ -191,6 +190,28 @@ export async function runDoctor(input: {
           status: "warn",
           message: "Skipped Cloud Run readiness checks because gcloud is not installed.",
           remediation: "Install the Google Cloud CLI, authenticate, and rerun `stacksmith doctor`."
+        });
+      }
+    }
+
+    if (provider === "github") {
+      const ghPresent = await toolExists("gh", env.PATH);
+      if (ghPresent) {
+        const auth = await runCommand("gh", ["auth", "status"], env);
+        checks.push({
+          id: "github.auth",
+          label: "GitHub authentication",
+          status: auth.exitCode === 0 ? "pass" : "warn",
+          message: auth.exitCode === 0 ? "GitHub CLI is authenticated." : "GitHub CLI is not authenticated.",
+          remediation: "Run `gh auth login` or configure GitHub CLI authentication before executing GitHub commands."
+        });
+      } else {
+        checks.push({
+          id: "github.auth",
+          label: "GitHub authentication",
+          status: "warn",
+          message: "Skipped GitHub authentication check because gh is not installed.",
+          remediation: "Install GitHub CLI and run `gh auth login`."
         });
       }
     }

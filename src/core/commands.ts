@@ -19,6 +19,7 @@ export interface ExternalCommandUndo extends ExternalCommandInvocation {
   description: string;
   risk: ChangeRisk;
   requiresConfirmation: boolean;
+  check?: ExternalCommandCheck;
 }
 
 export interface ExternalCommand extends ExternalCommandInvocation {
@@ -165,15 +166,19 @@ export async function runExternalCommand(input: {
     };
   }
 
-  if (input.command.check) {
-    const missingCheck = missingCommandEnv(input.command.check, env);
+  const idempotencyCheck = mode === "undo"
+    ? input.command.undo?.check ?? input.command.check
+    : input.command.check;
+
+  if (idempotencyCheck) {
+    const missingCheck = missingCommandEnv(idempotencyCheck, env);
     if (missingCheck.length === 0) {
-      const alreadyExists = await commandCheckPasses(input.command.check, env);
+      const alreadyExists = await commandCheckPasses(idempotencyCheck, env);
       if (mode === "apply" && alreadyExists) {
         return {
           commandId: input.command.id,
           status: "skipped",
-          message: `Already satisfied: ${input.command.check.description}`
+          message: `Already satisfied: ${idempotencyCheck.description}`
         };
       }
 
@@ -181,7 +186,7 @@ export async function runExternalCommand(input: {
         return {
           commandId: input.command.id,
           status: "skipped",
-          message: `Already absent: ${input.command.check.description}`
+          message: `Already absent: ${idempotencyCheck.description}`
         };
       }
     }
@@ -198,4 +203,11 @@ export async function runExternalCommand(input: {
 
   const result = await spawnCommand(targetCommand, env);
   return { ...result, commandId: input.command.id };
+}
+
+export function orderExternalCommandsForExecution(
+  commands: ExternalCommand[],
+  mode: "apply" | "undo"
+): ExternalCommand[] {
+  return mode === "undo" ? [...commands].reverse() : commands;
 }

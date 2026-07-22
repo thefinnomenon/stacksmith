@@ -17,7 +17,7 @@ import { buildNotificationSlackMessage, createNotificationEvent } from "./operat
 import { sendSlackMessage } from "./operations/slack-sender.js";
 import { generateAppSkeleton } from "./templates/app.js";
 import { allProviderCommandPlans } from "./providers/command-plans.js";
-import { formatExternalCommand, runExternalCommand } from "./core/commands.js";
+import { formatExternalCommand, orderExternalCommandsForExecution, runExternalCommand } from "./core/commands.js";
 
 function help(): string {
   return [
@@ -218,7 +218,8 @@ async function run(argv: string[]): Promise<string> {
 
       if (execute) {
         const results = [];
-        for (const command of commands) {
+        const orderedCommands = orderExternalCommandsForExecution(commands, mode);
+        for (const command of orderedCommands) {
           results.push(await runExternalCommand({ command, execute, mode }));
         }
 

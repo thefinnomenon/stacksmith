@@ -66,6 +66,18 @@ Inspect planned undo commands:
 npm run dev -- commands --provider cloud-run --undo
 ```
 
+Run opt-in live provider tests:
+
+```bash
+STACKSMITH_LIVE_GITHUB_TEST=1 npm test -- src/tests/github-live.test.ts
+```
+
+The live GitHub tests create private temporary repositories, verify them, run the Stacksmith undo flow, and verify deletion. They require GitHub CLI authentication with repository deletion permissions:
+
+```bash
+gh auth refresh -h github.com -s delete_repo
+```
+
 Cloud Run plans include creating a Google Cloud project, linking billing, enabling APIs, creating an Artifact Registry repository, and deploying the API service and worker job. Stacksmith generates a default project ID such as `ss-facereel` in `.stacksmith/project.json`; edit `providers.cloud-run.projectId` if that globally unique Google Cloud project ID is unavailable.
 
 Before executing the Cloud Run billing step, authenticate with `gcloud` and set:

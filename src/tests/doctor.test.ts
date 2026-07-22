@@ -5,7 +5,7 @@ import { runDoctor } from "../core/doctor.js";
 import { createInitialState } from "../core/state.js";
 import type { CommandRunner } from "../core/process.js";
 
-test("doctor reports missing credentials without printing secret values", async () => {
+test("doctor reports credentials without printing secret values", async () => {
   const manifest = createDefaultManifest({ name: "FaceReel", domain: "facereel.com" });
   const state = createInitialState(manifest);
   const report = await runDoctor({
@@ -14,11 +14,19 @@ test("doctor reports missing credentials without printing secret values", async 
     env: {
       PATH: process.env.PATH,
       GITHUB_TOKEN: "secret-value"
-    }
+    },
+    runCommand: async (command, args) => {
+      if (command === "gh" && args.join(" ") === "auth status") {
+        return { exitCode: 0, stdout: "Logged in\n", stderr: "" };
+      }
+
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+    executableExists: async (command) => command === "git" || command === "gh"
   });
 
   assert.equal(report.project, "facereel");
-  assert.equal(report.checks.some((check) => check.id === "env.github.GITHUB_TOKEN" && check.message === "GITHUB_TOKEN is set."), true);
+  assert.equal(report.checks.some((check) => check.id === "github.auth" && check.message === "GitHub CLI is authenticated."), true);
   assert.equal(JSON.stringify(report).includes("secret-value"), false);
 });
 

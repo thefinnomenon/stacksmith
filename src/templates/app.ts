@@ -58,6 +58,7 @@ export function createAppFiles(manifest: ProjectManifest): GeneratedFile[] {
           dev: "next dev",
           build: "prisma generate && next build",
           start: "next start",
+          test: "node --import tsx --test \"tests/**/*.test.ts\" \"workers/**/*.test.ts\"",
           check: "tsc --noEmit",
           "db:generate": "prisma generate",
           "db:migrate": "prisma migrate deploy",
@@ -65,6 +66,7 @@ export function createAppFiles(manifest: ProjectManifest): GeneratedFile[] {
         },
         dependencies: {
           "@aws-sdk/client-s3": "^3.850.0",
+          "@aws-sdk/s3-request-presigner": "^3.850.0",
           "@prisma/client": "^6.12.0",
           next: "^15.4.0",
           react: "^19.1.0",
@@ -76,6 +78,7 @@ export function createAppFiles(manifest: ProjectManifest): GeneratedFile[] {
           "@types/node": "^24.0.15",
           "@types/react": "^19.1.8",
           prisma: "^6.12.0",
+          tsx: "^4.20.3",
           typescript: "^5.8.3"
         }
       }, null, 2)}\n`
@@ -373,35 +376,12 @@ export async function GET() {
     },
     {
       path: "app/api/webhook/cloudflare/r2/route.ts",
-      content: `import { createHmac, timingSafeEqual } from "node:crypto";
-import { NextRequest, NextResponse } from "next/server";
+      content: `import { NextRequest, NextResponse } from "next/server";
 import { handleCloudflareR2EventBatch, type CloudflareR2EventEnvelope } from "@/lib/cloudflare-r2-events";
 import { env } from "@/lib/env";
+import { stacksmithSignatureHeader, stacksmithTimestampHeader, verifyStacksmithWebhookSignature } from "@/lib/stacksmith-webhook";
 
 export const runtime = "nodejs";
-
-const signatureHeader = "x-stacksmith-signature";
-const timestampHeader = "x-stacksmith-timestamp";
-
-function verifySignature(rawBody: string, timestamp: string | null, signature: string | null) {
-  if (!env.R2_EVENT_WEBHOOK_SECRET || !timestamp || !signature) {
-    return false;
-  }
-
-  const timestampMs = Number(timestamp) * 1000;
-  if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > 5 * 60 * 1000) {
-    return false;
-  }
-
-  const expected = "v1=" + createHmac("sha256", env.R2_EVENT_WEBHOOK_SECRET)
-    .update(\`\${timestamp}.\${rawBody}\`)
-    .digest("hex");
-
-  const expectedBuffer = Buffer.from(expected);
-  const actualBuffer = Buffer.from(signature);
-
-  return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
-}
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
@@ -410,7 +390,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "R2 event webhook secret is not configured." }, { status: 500 });
   }
 
-  if (!verifySignature(rawBody, request.headers.get(timestampHeader), request.headers.get(signatureHeader))) {
+  if (!verifyStacksmithWebhookSignature({
+    rawBody,
+    timestamp: request.headers.get(stacksmithTimestampHeader),
+    signature: request.headers.get(stacksmithSignatureHeader),
+    secret: env.R2_EVENT_WEBHOOK_SECRET
+  })) {
     return NextResponse.json({ error: "Invalid Cloudflare R2 event signature." }, { status: 401 });
   }
 
@@ -440,6 +425,54 @@ export async function GET() {
       posthog: "configured-by-env"
     }
   });
+}
+`
+    },
+    {
+      path: "lib/stacksmith-webhook.ts",
+      content: `import { createHmac, timingSafeEqual } from "node:crypto";
+
+export const stacksmithSignatureHeader = "x-stacksmith-signature";
+export const stacksmithTimestampHeader = "x-stacksmith-timestamp";
+
+export function signStacksmithWebhookPayload(input: {
+  rawBody: string;
+  secret: string;
+  timestamp?: string;
+}) {
+  const timestamp = input.timestamp ?? Math.floor(Date.now() / 1000).toString();
+  const signature = "v1=" + createHmac("sha256", input.secret)
+    .update(\`\${timestamp}.\${input.rawBody}\`)
+    .digest("hex");
+
+  return { timestamp, signature };
+}
+
+export function verifyStacksmithWebhookSignature(input: {
+  rawBody: string;
+  timestamp: string | null;
+  signature: string | null;
+  secret: string | undefined;
+  toleranceMs?: number;
+}) {
+  if (!input.secret || !input.timestamp || !input.signature) {
+    return false;
+  }
+
+  const timestampMs = Number(input.timestamp) * 1000;
+  if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > (input.toleranceMs ?? 5 * 60 * 1000)) {
+    return false;
+  }
+
+  const expected = signStacksmithWebhookPayload({
+    rawBody: input.rawBody,
+    secret: input.secret,
+    timestamp: input.timestamp
+  }).signature;
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(input.signature);
+
+  return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
 }
 `
     },
@@ -701,6 +734,263 @@ export const stacksmithEnvContract = ${JSON.stringify(envNames, null, 2)} as con
 `
     },
     {
+      path: "lib/storage.ts",
+      content: `import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+  type ListObjectsV2CommandOutput
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+export interface StorageClientConfig {
+  accountId: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucket: string;
+  endpoint?: string;
+  publicUrl?: string;
+  prefix?: string;
+}
+
+export interface PutObjectInput {
+  key: string;
+  body: string | Uint8Array | Buffer;
+  contentType?: string;
+  cacheControl?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface StoredObject {
+  key: string;
+  publicUrl?: string;
+  eTag?: string;
+  size?: number;
+  contentType?: string;
+  lastModified?: Date;
+  metadata?: Record<string, string>;
+}
+
+export interface GetObjectResult extends StoredObject {
+  body: Uint8Array;
+}
+
+function trimSlashes(value: string) {
+  return value.replace(/^\\/+|\\/+$/g, "");
+}
+
+function normalizePrefix(prefix: string | undefined) {
+  const normalized = trimSlashes(prefix ?? "");
+  return normalized ? \`\${normalized}/\` : "";
+}
+
+function normalizeKey(key: string) {
+  const normalized = trimSlashes(key);
+  if (!normalized) {
+    throw new Error("Storage object key cannot be empty.");
+  }
+  return normalized;
+}
+
+function normalizeBaseUrl(value: string | undefined) {
+  return value ? value.replace(/\\/+$/g, "") : undefined;
+}
+
+export class R2StorageClient {
+  private readonly client: S3Client;
+  private readonly bucket: string;
+  private readonly publicBaseUrl: string | undefined;
+  private readonly prefix: string;
+
+  constructor(config: StorageClientConfig) {
+    const endpoint = config.endpoint ?? \`https://\${config.accountId}.r2.cloudflarestorage.com\`;
+    this.bucket = config.bucket;
+    this.publicBaseUrl = normalizeBaseUrl(config.publicUrl);
+    this.prefix = normalizePrefix(config.prefix);
+    this.client = new S3Client({
+      region: "auto",
+      endpoint,
+      credentials: {
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey
+      }
+    });
+  }
+
+  objectKey(key: string) {
+    return \`\${this.prefix}\${normalizeKey(key)}\`;
+  }
+
+  publicUrl(key: string) {
+    return this.publicBaseUrl ? \`\${this.publicBaseUrl}/\${this.objectKey(key)}\` : undefined;
+  }
+
+  async putObject(input: PutObjectInput): Promise<StoredObject> {
+    const key = this.objectKey(input.key);
+    const result = await this.client.send(new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      Body: input.body,
+      ContentType: input.contentType,
+      CacheControl: input.cacheControl,
+      Metadata: input.metadata
+    }));
+
+    return {
+      key,
+      publicUrl: this.publicUrl(input.key),
+      eTag: result.ETag
+    };
+  }
+
+  async getObject(key: string): Promise<GetObjectResult> {
+    const objectKey = this.objectKey(key);
+    const result = await this.client.send(new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: objectKey
+    }));
+
+    return {
+      key: objectKey,
+      publicUrl: this.publicUrl(key),
+      body: await result.Body?.transformToByteArray() ?? new Uint8Array(),
+      eTag: result.ETag,
+      size: result.ContentLength,
+      contentType: result.ContentType,
+      lastModified: result.LastModified,
+      metadata: result.Metadata
+    };
+  }
+
+  async getText(key: string) {
+    const object = await this.getObject(key);
+    return new TextDecoder().decode(object.body);
+  }
+
+  async headObject(key: string): Promise<StoredObject> {
+    const objectKey = this.objectKey(key);
+    const result = await this.client.send(new HeadObjectCommand({
+      Bucket: this.bucket,
+      Key: objectKey
+    }));
+
+    return {
+      key: objectKey,
+      publicUrl: this.publicUrl(key),
+      eTag: result.ETag,
+      size: result.ContentLength,
+      contentType: result.ContentType,
+      lastModified: result.LastModified,
+      metadata: result.Metadata
+    };
+  }
+
+  async deleteObject(key: string) {
+    await this.client.send(new DeleteObjectCommand({
+      Bucket: this.bucket,
+      Key: this.objectKey(key)
+    }));
+  }
+
+  async listObjects(input: { prefix?: string; limit?: number } = {}) {
+    const prefix = input.prefix ? this.objectKey(input.prefix) : this.prefix;
+    const objects: StoredObject[] = [];
+    let continuationToken: string | undefined;
+
+    do {
+      const result: ListObjectsV2CommandOutput = await this.client.send(new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: prefix,
+        MaxKeys: input.limit,
+        ContinuationToken: continuationToken
+      }));
+
+      for (const item of result.Contents ?? []) {
+        if (item.Key) {
+          objects.push({
+            key: item.Key,
+            publicUrl: this.publicBaseUrl ? \`\${this.publicBaseUrl}/\${item.Key}\` : undefined,
+            eTag: item.ETag,
+            size: item.Size,
+            lastModified: item.LastModified
+          });
+        }
+      }
+
+      continuationToken = result.NextContinuationToken;
+    } while (continuationToken && (!input.limit || objects.length < input.limit));
+
+    return input.limit ? objects.slice(0, input.limit) : objects;
+  }
+
+  async createPresignedPutUrl(input: Omit<PutObjectInput, "body"> & { expiresInSeconds?: number }) {
+    return getSignedUrl(this.client, new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: this.objectKey(input.key),
+      ContentType: input.contentType,
+      CacheControl: input.cacheControl,
+      Metadata: input.metadata
+    }), {
+      expiresIn: input.expiresInSeconds ?? 900
+    });
+  }
+
+  async createPresignedGetUrl(key: string, expiresInSeconds = 900) {
+    return getSignedUrl(this.client, new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: this.objectKey(key)
+    }), {
+      expiresIn: expiresInSeconds
+    });
+  }
+}
+
+export function createStorageClient(config: Partial<StorageClientConfig> = {}) {
+  const accountId = config.accountId ?? process.env.R2_ACCOUNT_ID;
+  const accessKeyId = config.accessKeyId ?? process.env.R2_ACCESS_KEY_ID;
+  const secretAccessKey = config.secretAccessKey ?? process.env.R2_SECRET_ACCESS_KEY;
+  const bucket = config.bucket ?? process.env.R2_BUCKET_NAME;
+
+  if (!accountId || !accessKeyId || !secretAccessKey || !bucket) {
+    throw new Error("R2 storage is not configured. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET_NAME.");
+  }
+
+  return new R2StorageClient({
+    accountId,
+    accessKeyId,
+    secretAccessKey,
+    bucket,
+    endpoint: config.endpoint ?? process.env.R2_ENDPOINT,
+    publicUrl: config.publicUrl ?? process.env.FILES_URL,
+    prefix: config.prefix ?? process.env.R2_PREFIX
+  });
+}
+
+let defaultStorageClient: R2StorageClient | undefined;
+
+export function getStorageClient() {
+  defaultStorageClient ??= createStorageClient();
+  return defaultStorageClient;
+}
+
+export const storage = {
+  objectKey: (key: string) => getStorageClient().objectKey(key),
+  publicUrl: (key: string) => getStorageClient().publicUrl(key),
+  putObject: (input: PutObjectInput) => getStorageClient().putObject(input),
+  getObject: (key: string) => getStorageClient().getObject(key),
+  getText: (key: string) => getStorageClient().getText(key),
+  headObject: (key: string) => getStorageClient().headObject(key),
+  deleteObject: (key: string) => getStorageClient().deleteObject(key),
+  listObjects: (input?: { prefix?: string; limit?: number }) => getStorageClient().listObjects(input),
+  createPresignedPutUrl: (input: Omit<PutObjectInput, "body"> & { expiresInSeconds?: number }) => getStorageClient().createPresignedPutUrl(input),
+  createPresignedGetUrl: (key: string, expiresInSeconds?: number) => getStorageClient().createPresignedGetUrl(key, expiresInSeconds)
+};
+`
+    },
+    {
       path: "lib/deployment.ts",
       content: `import { env } from "./env";
 
@@ -793,6 +1083,200 @@ export function featureFlagContext(properties: Record<string, unknown> = {}) {
 `
     },
     {
+      path: "tests/stacksmith-webhook.test.ts",
+      content: `import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  signStacksmithWebhookPayload,
+  verifyStacksmithWebhookSignature
+} from "../lib/stacksmith-webhook";
+
+test("Stacksmith webhook signatures accept valid payloads", () => {
+  const rawBody = JSON.stringify({ source: "cloudflare-r2", events: [] });
+  const secret = "test-secret";
+  const signed = signStacksmithWebhookPayload({ rawBody, secret });
+
+  assert.equal(verifyStacksmithWebhookSignature({
+    rawBody,
+    secret,
+    timestamp: signed.timestamp,
+    signature: signed.signature
+  }), true);
+});
+
+test("Stacksmith webhook signatures reject tampered payloads", () => {
+  const rawBody = JSON.stringify({ source: "cloudflare-r2", events: [] });
+  const secret = "test-secret";
+  const signed = signStacksmithWebhookPayload({ rawBody, secret });
+
+  assert.equal(verifyStacksmithWebhookSignature({
+    rawBody: JSON.stringify({ source: "cloudflare-r2", events: [{ object: { key: "changed" } }] }),
+    secret,
+    timestamp: signed.timestamp,
+    signature: signed.signature
+  }), false);
+});
+`
+    },
+    {
+      path: "tests/storage.test.ts",
+      content: `import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import test from "node:test";
+import { R2StorageClient, type StorageClientConfig } from "../lib/storage";
+
+const liveStorageEnabled = process.env.STACKSMITH_LIVE_R2_STORAGE_TEST === "1";
+const liveStorageSkipReason = "Set STACKSMITH_LIVE_R2_STORAGE_TEST=1 and R2_* env vars to run live R2 storage tests.";
+
+function requireR2Config(): StorageClientConfig {
+  const required = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME"] as const;
+  for (const name of required) {
+    assert.ok(process.env[name], \`Set \${name} to run live R2 storage tests.\`);
+  }
+
+  return {
+    accountId: process.env.R2_ACCOUNT_ID!,
+    accessKeyId: process.env.R2_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+    bucket: process.env.R2_BUCKET_NAME!,
+    endpoint: process.env.R2_ENDPOINT,
+    publicUrl: process.env.FILES_URL,
+    prefix: \`stacksmith-tests/\${Date.now()}-\${randomBytes(3).toString("hex")}\`
+  };
+}
+
+test("R2StorageClient normalizes prefixed keys and public URLs", () => {
+  const client = new R2StorageClient({
+    accountId: "account",
+    accessKeyId: "key",
+    secretAccessKey: "secret",
+    bucket: "bucket",
+    publicUrl: "https://files.example.com/",
+    prefix: "/previews/pr-12/"
+  });
+
+  assert.equal(client.objectKey("/avatars/user.png"), "previews/pr-12/avatars/user.png");
+  assert.equal(client.publicUrl("avatars/user.png"), "https://files.example.com/previews/pr-12/avatars/user.png");
+  assert.throws(() => client.objectKey(""), /cannot be empty/);
+});
+
+test("R2StorageClient can put read list sign and delete objects against R2", {
+  skip: liveStorageEnabled ? false : liveStorageSkipReason,
+  timeout: 120_000
+}, async () => {
+  const config = requireR2Config();
+  const client = new R2StorageClient(config);
+  const key = "storage-client.txt";
+
+  try {
+    const put = await client.putObject({
+      key,
+      body: "hello from Stacksmith storage",
+      contentType: "text/plain",
+      cacheControl: "public, max-age=60",
+      metadata: { purpose: "live-test" }
+    });
+    assert.equal(put.key, \`\${config.prefix}/\${key}\`);
+
+    const head = await client.headObject(key);
+    assert.equal(head.contentType, "text/plain");
+
+    const text = await client.getText(key);
+    assert.equal(text, "hello from Stacksmith storage");
+
+    const listed = await client.listObjects({ prefix: "", limit: 10 });
+    assert.ok(listed.some((object) => object.key === put.key));
+
+    const signedPutUrl = await client.createPresignedPutUrl({ key: "signed.txt", contentType: "text/plain" });
+    assert.match(signedPutUrl, /X-Amz-Signature/);
+  } finally {
+    await client.deleteObject(key);
+    await client.deleteObject("signed.txt");
+  }
+});
+`
+    },
+    {
+      path: "workers/r2-event-forwarder/src/index.test.ts",
+      content: `import assert from "node:assert/strict";
+import test from "node:test";
+import worker, { type CloudflareR2Event, type Env } from "./index";
+import {
+  stacksmithSignatureHeader,
+  stacksmithTimestampHeader,
+  verifyStacksmithWebhookSignature
+} from "../../../lib/stacksmith-webhook";
+
+test("R2 event forwarder posts signed event envelopes to the configured endpoint", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  const event: CloudflareR2Event = {
+    account: "account",
+    action: "PutObject",
+    bucket: "stacksmith-test",
+    object: {
+      key: "uploads/example.txt",
+      size: 12,
+      eTag: "etag"
+    },
+    eventTime: new Date().toISOString()
+  };
+  const env: Env = {
+    STACKSMITH_PROJECT: "facereel",
+    R2_EVENT_FORWARD_URL: "https://example.com/api/webhook/cloudflare/r2",
+    R2_EVENT_WEBHOOK_SECRET: "test-secret"
+  };
+  let acknowledged = false;
+  let retried = false;
+
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+
+  try {
+    await worker.queue({
+      messages: [{
+        body: event,
+        ack() {
+          acknowledged = true;
+        },
+        retry() {
+          retried = true;
+        }
+      }]
+    }, env);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.url, env.R2_EVENT_FORWARD_URL);
+    assert.equal(calls[0]?.init?.method, "POST");
+    assert.equal(acknowledged, true);
+    assert.equal(retried, false);
+
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    assert.equal(headers["x-stacksmith-event"], "cloudflare-r2");
+    assert.equal(headers["x-stacksmith-project"], "facereel");
+    assert.match(headers["x-stacksmith-signature"], /^v1=/);
+
+    const rawBody = String(calls[0]?.init?.body);
+    assert.equal(verifyStacksmithWebhookSignature({
+      rawBody,
+      secret: env.R2_EVENT_WEBHOOK_SECRET,
+      timestamp: headers[stacksmithTimestampHeader],
+      signature: headers[stacksmithSignatureHeader]
+    }), true);
+
+    const body = JSON.parse(rawBody);
+    assert.equal(body.project, "facereel");
+    assert.equal(body.source, "cloudflare-r2");
+    assert.deepEqual(body.events, [event]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+`
+    },
+    {
       path: "lib/db.ts",
       content: `import { PrismaClient } from "@prisma/client";
 
@@ -802,20 +1286,6 @@ export const db = globalForPrisma.prisma ?? new PrismaClient();
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = db;
-}
-`
-    },
-    {
-      path: "lib/storage.ts",
-      content: `import { env } from "./env";
-
-export function objectKey(key: string) {
-  const prefix = env.R2_PREFIX ? env.R2_PREFIX.replace(/\\/$/, "") + "/" : "";
-  return \`\${prefix}\${key.replace(/^\\/+/, "")}\`;
-}
-
-export function storageConfigured() {
-  return Boolean(env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_BUCKET_NAME);
 }
 `
     },

@@ -11,7 +11,7 @@ import { createProject } from "../core/create.js";
 import { providerCommandPlan } from "../providers/command-plans.js";
 
 const liveCloudflareEnabled = process.env.STACKSMITH_LIVE_CLOUDFLARE_TEST === "1";
-const liveCloudflareSkipReason = "Set STACKSMITH_LIVE_CLOUDFLARE_TEST=1 to run live Cloudflare R2 create/CORS/delete tests with the local Wrangler login.";
+const liveCloudflareSkipReason = "Set STACKSMITH_LIVE_CLOUDFLARE_TEST=1 to run live Cloudflare R2 and Queue tests with the local Wrangler login.";
 const testTimeoutMs = 240_000;
 
 interface ProcessResult {
@@ -78,6 +78,16 @@ async function assertBucketDeleted(bucket: string, env: NodeJS.ProcessEnv): Prom
   assert.notEqual(result.exitCode, 0, "Expected R2 bucket to be deleted.");
 }
 
+async function assertQueueExists(queue: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const result = await run("wrangler", ["queues", "info", queue], { env });
+  assert.equal(result.exitCode, 0, result.stderr);
+}
+
+async function assertQueueDeleted(queue: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const result = await run("wrangler", ["queues", "info", queue], { env });
+  assert.notEqual(result.exitCode, 0, "Expected Cloudflare Queue to be deleted.");
+}
+
 async function assertCorsConfigured(bucket: string, env: NodeJS.ProcessEnv): Promise<void> {
   const result = await run("wrangler", ["r2", "bucket", "cors", "list", bucket], { env });
   assert.equal(result.exitCode, 0, result.stderr);
@@ -85,8 +95,38 @@ async function assertCorsConfigured(bucket: string, env: NodeJS.ProcessEnv): Pro
   assert.match(result.stdout, /localhost:3000|vercel\.app/i);
 }
 
+async function assertNotificationRuleExists(bucket: string, queue: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const result = await run("wrangler", ["r2", "bucket", "notification", "list", bucket], { env });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(queue));
+  assert.match(result.stdout, /PutObject|CompleteMultipartUpload|CopyObject/i);
+  assert.match(result.stdout, /DeleteObject|LifecycleDeletion/i);
+}
+
 async function cleanupBucket(bucket: string, env: NodeJS.ProcessEnv): Promise<void> {
   await run("wrangler", ["r2", "bucket", "delete", bucket], { env, stdin: "y\n" });
+}
+
+async function cleanupQueue(queue: string, env: NodeJS.ProcessEnv): Promise<void> {
+  await run("wrangler", ["queues", "delete", queue], { env, stdin: "y\n" });
+}
+
+async function waitForNotificationRuleDeleted(bucket: string, queue: string, env: NodeJS.ProcessEnv): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const result = await run("wrangler", ["r2", "bucket", "notification", "list", bucket], { env });
+    if (result.exitCode !== 0 || !result.stdout.includes(queue)) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+
+  assert.fail(`Expected R2 notification rule for ${queue} on ${bucket} to be deleted.`);
+}
+
+async function cleanupNotification(bucket: string, queue: string, env: NodeJS.ProcessEnv): Promise<void> {
+  await run("wrangler", ["r2", "bucket", "notification", "delete", bucket, "--queue", queue], { env });
+  await waitForNotificationRuleDeleted(bucket, queue, env);
 }
 
 test("live Cloudflare command plan creates verifies configures and deletes an R2 bucket", {
@@ -123,6 +163,84 @@ test("live Cloudflare command plan creates verifies configures and deletes an R2
   } finally {
     process.chdir(previousCwd);
     await cleanupBucket(bucket, env);
+    await rm(dirname(root), { recursive: true, force: true });
+  }
+});
+
+test("live Cloudflare command plan creates verifies and deletes an R2 event queue", {
+  skip: liveCloudflareEnabled ? false : liveCloudflareSkipReason,
+  timeout: testTimeoutMs
+}, async () => {
+  const env = await requireCloudflareAuth();
+  const name = `stacksmith-live-queue-${projectSuffix()}`;
+  const queue = `${name}-r2-events`;
+  const root = join(await mkdtemp(join(tmpdir(), "stacksmith-live-queue-")), name);
+  const result = await createProject({ name, targetDir: root, force: true });
+  const command = providerCommandPlan("cloudflare", result.manifest)
+    .find((candidate) => candidate.id === "cloudflare.r2.events.queue");
+
+  try {
+    assert.ok(command);
+    const createQueueResult = await runExternalCommand({ command, execute: true, env });
+    assert.equal(createQueueResult.status, "executed", createQueueResult.stderr ?? createQueueResult.message);
+
+    await assertQueueExists(queue, env);
+
+    const deleteQueueResult = await runExternalCommand({ command, execute: true, mode: "undo", env });
+    assert.equal(deleteQueueResult.status, "executed", deleteQueueResult.stderr ?? deleteQueueResult.message);
+
+    await assertQueueDeleted(queue, env);
+  } finally {
+    await cleanupQueue(queue, env);
+    await rm(dirname(root), { recursive: true, force: true });
+  }
+});
+
+test("live Cloudflare command plan wires R2 bucket notifications to a queue", {
+  skip: liveCloudflareEnabled ? false : liveCloudflareSkipReason,
+  timeout: testTimeoutMs
+}, async () => {
+  const env = await requireCloudflareAuth();
+  const name = `stacksmith-live-r2-events-${projectSuffix()}`;
+  const bucket = `${name}-dev`;
+  const queue = `${name}-r2-events`;
+  const root = join(await mkdtemp(join(tmpdir(), "stacksmith-live-r2-events-")), name);
+  const result = await createProject({ name, targetDir: root, force: true });
+  const commands = providerCommandPlan("cloudflare", result.manifest);
+  const createBucket = commands.find((command) => command.id === "cloudflare.r2.dev");
+  const createQueue = commands.find((command) => command.id === "cloudflare.r2.events.queue");
+  const createNotification = commands.find((command) => command.id === "cloudflare.r2.events.notification.dev");
+
+  try {
+    assert.ok(createBucket);
+    assert.ok(createQueue);
+    assert.ok(createNotification);
+
+    for (const command of [createBucket, createQueue, createNotification]) {
+      const commandResult = await runExternalCommand({ command, execute: true, env });
+      assert.equal(commandResult.status, "executed", commandResult.stderr ?? commandResult.message);
+    }
+
+    await assertBucketExists(bucket, env);
+    await assertQueueExists(queue, env);
+    await assertNotificationRuleExists(bucket, queue, env);
+
+    const deleteNotification = await runExternalCommand({ command: createNotification, execute: true, mode: "undo", env });
+    assert.equal(deleteNotification.status, "executed", deleteNotification.stderr ?? deleteNotification.message);
+    await waitForNotificationRuleDeleted(bucket, queue, env);
+
+    const deleteQueue = await runExternalCommand({ command: createQueue, execute: true, mode: "undo", env });
+    assert.equal(deleteQueue.status, "executed", deleteQueue.stderr ?? deleteQueue.message);
+
+    const deleteBucket = await runExternalCommand({ command: createBucket, execute: true, mode: "undo", env });
+    assert.equal(deleteBucket.status, "executed", deleteBucket.stderr ?? deleteBucket.message);
+
+    await assertQueueDeleted(queue, env);
+    await assertBucketDeleted(bucket, env);
+  } finally {
+    await cleanupNotification(bucket, queue, env);
+    await cleanupBucket(bucket, env);
+    await cleanupQueue(queue, env);
     await rm(dirname(root), { recursive: true, force: true });
   }
 });

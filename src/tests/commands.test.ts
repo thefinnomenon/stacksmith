@@ -34,6 +34,7 @@ test("provider command plans expose future external operations", () => {
   assert.equal(commands.some((command) => command.id === "prisma-postgres.vercel.database.connect"), true);
   assert.equal(commands.some((command) => command.id === "vercel.auth.check"), true);
   assert.equal(commands.some((command) => command.id === "vercel.project.create"), true);
+  assert.equal(commands.some((command) => command.id === "vercel.project.configure-next"), true);
   assert.equal(commands.some((command) => command.id === "vercel.project.link"), true);
   assert.equal(commands.some((command) => command.id === "vercel.domain.add"), true);
   assert.equal(commands.some((command) => command.id === "vercel.domain.verify"), true);
@@ -177,6 +178,7 @@ test("Vercel commands create project spine and environment variables idempotentl
   manifest.providers.vercel.team = "finnternet";
   const commands = allProviderCommandPlans(manifest);
   const createProject = commands.find((command) => command.id === "vercel.project.create");
+  const configureNext = commands.find((command) => command.id === "vercel.project.configure-next");
   const linkProject = commands.find((command) => command.id === "vercel.project.link");
   const domain = commands.find((command) => command.id === "vercel.domain.add");
   const productionAppUrl = commands.find((command) => command.id === "vercel.env.production.APP_URL");
@@ -187,6 +189,7 @@ test("Vercel commands create project spine and environment variables idempotentl
   const pull = commands.find((command) => command.id === "vercel.env.pull.development");
 
   assert.ok(createProject);
+  assert.ok(configureNext);
   assert.ok(linkProject);
   assert.ok(domain);
   assert.ok(productionAppUrl);
@@ -200,6 +203,19 @@ test("Vercel commands create project spine and environment variables idempotentl
   assert.equal(createProject.args.includes("finnternet"), true);
   assert.equal(createProject.check?.args.join(" ").includes("project inspect facereel"), true);
   assert.equal(createProject.undo?.check?.args.join(" ").includes("project inspect facereel"), true);
+  assert.deepEqual(configureNext.args, [
+    "project",
+    "update",
+    "facereel",
+    "--framework",
+    "nextjs",
+    "--auto-detect",
+    "output-directory",
+    "--auto-detect",
+    "build-command",
+    "--scope",
+    "finnternet"
+  ]);
   assert.equal(linkProject.args.includes("--team"), true);
   assert.deepEqual(domain.args.slice(0, 4), ["domains", "add", "facereel.com", "facereel"]);
   assert.deepEqual(productionAppUrl.env, undefined);

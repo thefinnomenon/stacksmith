@@ -23,9 +23,15 @@ test("Cloudflare plan includes registrar, CORS, tunnel, and DNS commands", () =>
   assert.ok(domainSearch);
   assert.deepEqual(domainSearch.env, ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]);
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.queue"));
+  const workersSetup = commands.find((command) => command.id === "cloudflare.workers.subdomain.setup");
+  assert.ok(workersSetup);
+  assert.deepEqual(workersSetup.args, ["cloudflare", "setup-workers", "--open", "--execute"]);
   const eventQueue = commands.find((command) => command.id === "cloudflare.r2.events.queue");
   assert.equal(eventQueue?.env, undefined);
   assert.equal(eventQueue?.undo?.stdin, "y\n");
+  const deadLetterQueue = commands.find((command) => command.id === "cloudflare.r2.events.dead-letter-queue");
+  assert.ok(deadLetterQueue);
+  assert.equal(deadLetterQueue.undo?.stdin, "y\n");
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.worker.deploy"));
   assert.ok(commands.some((command) => command.id === "cloudflare.r2.events.worker.secret"));
   const productionNotifications = commands.find((command) => command.id === "cloudflare.r2.events.notification.production");

@@ -84,6 +84,7 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
   const r2EventsEnabled = manifest.providers.cloudflare.r2Events !== false;
   const r2EventTypes = manifest.providers.cloudflare.r2EventTypes ?? ["object-create", "object-delete"];
   const r2EventQueueName = r2EventForwarder?.queueName ?? `${manifest.slug}-r2-events`;
+  const r2EventDeadLetterQueueName = `${r2EventQueueName}-dead`;
   const r2EventWorkerName = r2EventForwarder?.workerName ?? `${manifest.slug}-r2-event-forwarder`;
   const r2EventWorkerConfig = "workers/r2-event-forwarder/wrangler.jsonc";
   const corsFile = ".stacksmith/r2-cors.json";
@@ -173,6 +174,30 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
   const r2EventCommands: ExternalCommand[] = r2EventsEnabled ? [
     {
       provider: "cloudflare" as const,
+      id: "cloudflare.workers.subdomain.setup",
+      description: "Open and verify Cloudflare Workers account setup before creating Worker Queue consumers.",
+      command: "stacksmith",
+      args: ["cloudflare", "setup-workers", "--open", "--execute"],
+      risk: "reversible" as const,
+      requiresConfirmation: true,
+      env: wranglerAuthEnv,
+      check: {
+        description: "Cloudflare Workers setup command can verify the account subdomain.",
+        command: "stacksmith",
+        args: ["cloudflare", "setup-workers", "--execute"],
+        stdoutIncludes: "Workers subdomain is initialized",
+        env: wranglerAuthEnv
+      },
+      undo: {
+        description: "Cloudflare Workers account setup is shared account state and is not undone per project.",
+        command: "stacksmith",
+        args: ["noop", "cloudflare.workers.subdomain.setup"],
+        risk: "read-only" as const,
+        requiresConfirmation: false
+      }
+    },
+    {
+      provider: "cloudflare" as const,
       id: "cloudflare.r2.events.queue",
       description: "Create the Cloudflare Queue that receives R2 bucket event notifications.",
       command: "wrangler",
@@ -198,6 +223,37 @@ export function cloudflareCommandPlan(manifest: ProjectManifest): ExternalComman
           description: `${r2EventQueueName} queue exists.`,
           command: "wrangler",
           args: ["queues", "info", r2EventQueueName],
+          env: wranglerAuthEnv
+        }
+      }
+    },
+    {
+      provider: "cloudflare" as const,
+      id: "cloudflare.r2.events.dead-letter-queue",
+      description: "Create the dead-letter Queue for failed R2 event deliveries.",
+      command: "wrangler",
+      args: ["queues", "create", r2EventDeadLetterQueueName],
+      risk: "reversible" as const,
+      requiresConfirmation: true,
+      env: wranglerAuthEnv,
+      check: {
+        description: `${r2EventDeadLetterQueueName} queue exists.`,
+        command: "wrangler",
+        args: ["queues", "info", r2EventDeadLetterQueueName],
+        env: wranglerAuthEnv
+      },
+      undo: {
+        description: "Delete the R2 event dead-letter queue.",
+        command: "wrangler",
+        args: ["queues", "delete", r2EventDeadLetterQueueName],
+        stdin: "y\n",
+        risk: "destructive" as const,
+        requiresConfirmation: true,
+        env: wranglerAuthEnv,
+        check: {
+          description: `${r2EventDeadLetterQueueName} queue exists.`,
+          command: "wrangler",
+          args: ["queues", "info", r2EventDeadLetterQueueName],
           env: wranglerAuthEnv
         }
       }

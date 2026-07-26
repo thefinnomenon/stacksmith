@@ -92,4 +92,5 @@ test("doctor treats Wrangler auth as enough for Cloudflare R2 operations", async
 
   assert.equal(report.checks.some((check) => check.id === "cloudflare.wrangler.auth" && check.status === "pass"), true);
   assert.equal(report.checks.some((check) => check.id === "env.cloudflare.CLOUDFLARE_API_TOKEN"), false);
+  assert.equal(report.checks.some((check) => check.id === "cloudflare.workers.subdomain" && check.status === "warn"), true);
 });

@@ -4,6 +4,8 @@ import { delimiter, join } from "node:path";
 import { defaultCommandRunner, type CommandRunner } from "./process.js";
 import type { ProjectManifest, ProjectState, ProviderId } from "./types.js";
 import { cloudRunReadinessChecks } from "../providers/cloud-run-readiness.js";
+import { checkCloudflareWorkersSubdomain, cloudflareWorkersSetupUrl } from "../providers/cloudflare-workers.js";
+import { parseWranglerAccountId } from "../providers/cloudflare-r2-credentials.js";
 
 export type DoctorStatus = "pass" | "warn" | "fail";
 
@@ -215,8 +217,10 @@ export async function runDoctor(input: {
 
     if (provider === "cloudflare") {
       const wranglerPresent = await toolExists("wrangler", env.PATH);
+      let wranglerAuthOutput = "";
       if (wranglerPresent) {
         const auth = await runCommand("wrangler", ["whoami"], env);
+        wranglerAuthOutput = auth.stdout;
         checks.push({
           id: "cloudflare.wrangler.auth",
           label: "Cloudflare Wrangler authentication",
@@ -232,6 +236,31 @@ export async function runDoctor(input: {
           message: "Skipped Wrangler authentication check because wrangler is not installed.",
           remediation: "Install Wrangler and run `wrangler login`."
         });
+      }
+
+      if (input.manifest.providers.cloudflare.r2Events !== false) {
+        const accountId = env.CLOUDFLARE_ACCOUNT_ID ?? parseWranglerAccountId(wranglerAuthOutput);
+        if (env.CLOUDFLARE_API_TOKEN && accountId) {
+          const subdomain = await checkCloudflareWorkersSubdomain({
+            accountId,
+            apiToken: env.CLOUDFLARE_API_TOKEN
+          });
+          checks.push({
+            id: "cloudflare.workers.subdomain",
+            label: "Cloudflare Workers subdomain",
+            status: subdomain.status === "ready" ? "pass" : "warn",
+            message: subdomain.message,
+            remediation: `Open ${subdomain.setupUrl} once to initialize workers.dev before deploying R2 event Worker Queue consumers.`
+          });
+        } else {
+          checks.push({
+            id: "cloudflare.workers.subdomain",
+            label: "Cloudflare Workers subdomain",
+            status: "warn",
+            message: "Not verified. R2 event forwarding needs the account workers.dev subdomain initialized before Worker Queue consumers can be created.",
+            remediation: `Run \`stacksmith cloudflare setup-workers --open --execute\` or open ${cloudflareWorkersSetupUrl()} once.`
+          });
+        }
       }
 
       const apiVariables = input.manifest.domain

@@ -270,6 +270,49 @@ function vercelCommandPlan(manifest: ProjectManifest): ExternalCommand[] {
     },
     {
       provider,
+      id: "vercel.project.configure-next",
+      description: "Configure the Vercel project to use the Next.js framework preset.",
+      command: "vercel",
+      args: [
+        "project",
+        "update",
+        manifest.slug,
+        "--framework",
+        "nextjs",
+        "--auto-detect",
+        "output-directory",
+        "--auto-detect",
+        "build-command",
+        ...scopeArgs
+      ],
+      risk: "reversible",
+      requiresConfirmation: true,
+      check: {
+        description: "Vercel project is configured for Next.js.",
+        command: "sh",
+        args: ["-c", `vercel project inspect ${shSingleQuote(manifest.slug)} ${scopeArgs.map(shSingleQuote).join(" ")} | grep -Ei 'nextjs|Next\\.js|Next.js'`]
+      },
+      undo: {
+        description: "Clear the Vercel project framework preset.",
+        command: "vercel",
+        args: [
+          "project",
+          "update",
+          manifest.slug,
+          "--framework",
+          "other",
+          "--auto-detect",
+          "output-directory",
+          "--auto-detect",
+          "build-command",
+          ...scopeArgs
+        ],
+        risk: "reversible",
+        requiresConfirmation: true
+      }
+    },
+    {
+      provider,
       id: "vercel.project.link",
       description: "Link or create the Vercel project.",
       command: "vercel",

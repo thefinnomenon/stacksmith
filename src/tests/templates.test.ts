@@ -48,6 +48,8 @@ test("generateAppSkeleton writes a Next-style app foundation", async () => {
   assert.match(cors, /https:\/\/facereel\.com/);
   assert.match(route, /handleCloudflareR2EventBatch/);
   assert.match(route, /verifyStacksmithWebhookSignature/);
+  assert.match(route, /STACKSMITH_R2_EVENT_E2E_MARKERS/);
+  assert.match(route, /writeE2EMarkers/);
   assert.match(storage, /class R2StorageClient/);
   assert.match(storage, /createPresignedPutUrl/);
   assert.match(storage, /R2 storage is not configured/);
@@ -60,6 +62,7 @@ test("generateAppSkeleton writes a Next-style app foundation", async () => {
   assert.match(workerTest, /verifyStacksmithWebhookSignature/);
   assert.match(wrangler, /facereel-r2-events/);
   assert.match(wrangler, /https:\/\/facereel\.com\/api\/webhook\/cloudflare\/r2/);
+  assert.match(wrangler, /"workers_dev": false/);
   assert.match(storageTest, /STACKSMITH_LIVE_R2_STORAGE_TEST/);
   assert.match(webhookIdempotency, /provider_idempotencyKey/);
   assert.match(webhookIdempotency, /existing\?\.status === "failed"/);

@@ -22,5 +22,6 @@ export * from "./observability/index.js";
 export * from "./providers/index.js";
 export * from "./providers/command-plans.js";
 export * from "./providers/cloudflare-plan.js";
+export * from "./providers/cloudflare-workers.js";
 export * from "./providers/cloud-run-readiness.js";
 export * from "./templates/app.js";

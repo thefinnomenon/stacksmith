@@ -19,6 +19,8 @@ import { generateAppSkeleton } from "./templates/app.js";
 import { allProviderCommandPlans } from "./providers/command-plans.js";
 import { formatExternalCommand, orderExternalCommandsForExecution, runExternalCommand } from "./core/commands.js";
 import { createR2Credentials, deleteCloudflareApiToken, setupCloudflareApiToken } from "./providers/cloudflare-r2-credentials.js";
+import { setupCloudflareWorkers } from "./providers/cloudflare-workers.js";
+import { deleteVercelR2Env, syncVercelR2Env } from "./providers/vercel-env.js";
 import type { EnvironmentName } from "./core/types.js";
 
 function help(): string {
@@ -35,8 +37,11 @@ function help(): string {
     "  dev [--json]",
     "  commands [--json] [--provider github] [--id command.id] [--execute] [--undo]",
     "  cloudflare setup-token [--open] [--token token | --token-stdin] [--save] [--env-path ~/.stacksmith/env.local] [--execute]",
+    "  cloudflare setup-workers [--open] [--execute]",
     "  r2 credentials [--environment development|preview|staging|production] [--bucket name] [--env-path .env.local] [--execute]",
     "  r2 token delete --token-id id [--execute]",
+    "  vercel env sync-r2 [--environment development|preview|staging|production] [--from-env-path .env.local] [--execute]",
+    "  vercel env delete-r2 [--environment development|preview|staging|production] [--execute]",
     "  domain promote <domain> [--json]",
     "  notify-slack --channel C123 [--execute]",
     "  schema",
@@ -79,6 +84,10 @@ async function loadProject(flags: Record<string, string | boolean>) {
 
 function envPathFlag(flags: Record<string, string | boolean>): string | undefined {
   return flagString(flags, "env-path") ?? flagString(flags, "env-file");
+}
+
+function fromEnvPathFlag(flags: Record<string, string | boolean>): string | undefined {
+  return flagString(flags, "from-env-path") ?? envPathFlag(flags);
 }
 
 async function readStdin(): Promise<string> {
@@ -271,8 +280,27 @@ async function run(argv: string[]): Promise<string> {
 
     case "cloudflare": {
       const subcommand = parsed.positionals[0];
+      if (subcommand === "setup-workers") {
+        const result = await setupCloudflareWorkers({
+          accountId: flagString(parsed.flags, "account-id"),
+          apiToken: flagString(parsed.flags, "token") ?? process.env.CLOUDFLARE_API_TOKEN,
+          open: flagBoolean(parsed.flags, "open"),
+          execute: flagBoolean(parsed.flags, "execute")
+        });
+
+        return flagBoolean(parsed.flags, "json")
+          ? JSON.stringify(result, null, 2)
+          : [
+              result.message,
+              `Setup page: ${result.setupUrl}`,
+              result.accountId ? `Account: ${result.accountId}` : "",
+              result.subdomain ? `Subdomain: ${result.subdomain}.workers.dev` : "",
+              `Opened browser: ${result.opened ? "yes" : "no"}`
+            ].filter(Boolean).join("\n");
+      }
+
       if (subcommand !== "setup-token") {
-        throw new Error("Unknown cloudflare command. Use `stacksmith cloudflare setup-token`.");
+        throw new Error("Unknown cloudflare command. Use `stacksmith cloudflare setup-token` or `stacksmith cloudflare setup-workers`.");
       }
       const token = flagBoolean(parsed.flags, "token-stdin")
         ? (await readStdin()).trim()
@@ -351,6 +379,55 @@ async function run(argv: string[]): Promise<string> {
       }
 
       throw new Error("Unknown r2 command. Use `stacksmith r2 credentials` or `stacksmith r2 token delete --token-id id`.");
+    }
+
+    case "vercel": {
+      const subcommand = parsed.positionals[0];
+      const nested = parsed.positionals[1];
+      if (subcommand !== "env") {
+        throw new Error("Unknown vercel command. Use `stacksmith vercel env sync-r2` or `stacksmith vercel env delete-r2`.");
+      }
+
+      const { manifest } = await loadProject(parsed.flags);
+      const common = {
+        manifest,
+        environment: environmentName(flagString(parsed.flags, "environment")),
+        envPath: fromEnvPathFlag(parsed.flags),
+        project: flagString(parsed.flags, "project"),
+        scope: flagString(parsed.flags, "scope"),
+        execute: flagBoolean(parsed.flags, "execute")
+      };
+
+      if (nested === "sync-r2") {
+        const result = await syncVercelR2Env(common);
+        return flagBoolean(parsed.flags, "json")
+          ? JSON.stringify(result, null, 2)
+          : [
+              result.message,
+              `Project: ${result.project}`,
+              result.scope ? `Scope: ${result.scope}` : "",
+              `Environment: ${result.target.stacksmithEnvironment} -> ${result.target.vercelEnvironment}`,
+              result.target.gitBranch ? `Git branch: ${result.target.gitBranch}` : "",
+              `Source env: ${result.envPath}`,
+              `Keys: ${result.keys.join(", ")}`
+            ].filter(Boolean).join("\n");
+      }
+
+      if (nested === "delete-r2") {
+        const result = await deleteVercelR2Env(common);
+        return flagBoolean(parsed.flags, "json")
+          ? JSON.stringify(result, null, 2)
+          : [
+              result.message,
+              `Project: ${result.project}`,
+              result.scope ? `Scope: ${result.scope}` : "",
+              `Environment: ${result.target.stacksmithEnvironment} -> ${result.target.vercelEnvironment}`,
+              result.target.gitBranch ? `Git branch: ${result.target.gitBranch}` : "",
+              `Keys: ${result.keys.join(", ")}`
+            ].filter(Boolean).join("\n");
+      }
+
+      throw new Error("Unknown vercel env command. Use `sync-r2` or `delete-r2`.");
     }
 
     case "domain": {

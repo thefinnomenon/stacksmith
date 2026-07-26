@@ -94,10 +94,27 @@ Generate R2 S3 credentials for a generated app env file:
 ```bash
 npm run dev -- cloudflare setup-token --open
 pbpaste | npm run dev -- cloudflare setup-token --token-stdin --save --execute
+npm run dev -- cloudflare setup-workers --open --execute
 npm run dev -- r2 credentials --environment development --execute
 ```
 
 This command infers `CLOUDFLARE_ACCOUNT_ID` from `wrangler whoami` when possible, creates a scoped Cloudflare API token for the environment bucket, writes `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_ENDPOINT`, `FILES_URL`, and `R2_PREFIX` into `.env.local`, and does not print secret values. It requires a parent token with Cloudflare API token write permission. By default `cloudflare setup-token --save` stores that operator token in `~/.stacksmith/env.local`, which `r2 credentials` reads automatically.
+
+`cloudflare setup-workers --open --execute` opens the Cloudflare Workers & Pages account setup page and verifies the account-level `workers.dev` subdomain when the token has permission to read it. Cloudflare requires this one-time account setup before a Queue can be attached to the generated R2 event forwarder Worker, even when the Worker itself disables public `workers.dev` routes.
+
+Sync those R2 values into Vercel for a target environment:
+
+```bash
+npm run dev -- vercel env sync-r2 --environment development --from-env-path .env.local --execute
+```
+
+Undo the Vercel env sync when testing teardown:
+
+```bash
+npm run dev -- vercel env delete-r2 --environment development --execute
+```
+
+Use `--env-path` for Stacksmith env-writing commands and `--from-env-path` for reading an existing app env file. Avoid `--env-file` with `npm run dev` because recent Node versions reserve that flag.
 
 ```bash
 export CLOUDFLARE_API_TOKEN=...

@@ -509,7 +509,7 @@ async function writeGenericEnvFile(path: string, values: Record<string, string>,
   await writeFile(path, updateEnvContent(current, values, header), "utf8");
 }
 
-async function readEnvFileValue(path: string, key: string): Promise<string | undefined> {
+export async function readEnvFileValue(path: string, key: string): Promise<string | undefined> {
   let content = "";
   try {
     content = await readFile(path, "utf8");

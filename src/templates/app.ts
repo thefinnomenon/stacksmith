@@ -138,6 +138,7 @@ dist/
         main: "src/index.ts",
         compatibility_date: "2026-07-22",
         compatibility_flags: ["nodejs_compat"],
+        workers_dev: false,
         observability: {
           enabled: true,
           head_sampling_rate: 1
@@ -379,9 +380,35 @@ export async function GET() {
       content: `import { NextRequest, NextResponse } from "next/server";
 import { handleCloudflareR2EventBatch, type CloudflareR2EventEnvelope } from "@/lib/cloudflare-r2-events";
 import { env } from "@/lib/env";
+import { storage } from "@/lib/storage";
 import { stacksmithSignatureHeader, stacksmithTimestampHeader, verifyStacksmithWebhookSignature } from "@/lib/stacksmith-webhook";
 
 export const runtime = "nodejs";
+
+function markerKey(event: CloudflareR2EventEnvelope["events"][number]) {
+  return \`\${event.action}/\${event.bucket}/\${event.object.key}.json\`;
+}
+
+async function writeE2EMarkers(envelope: CloudflareR2EventEnvelope) {
+  const markers = [];
+
+  for (const event of envelope.events) {
+    const marker = await storage.putObject({
+      key: markerKey(event),
+      contentType: "application/json",
+      body: JSON.stringify({
+        project: envelope.project,
+        source: envelope.source,
+        receivedAt: envelope.receivedAt,
+        event
+      }, null, 2)
+    });
+
+    markers.push(marker.key);
+  }
+
+  return markers;
+}
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
@@ -400,6 +427,18 @@ export async function POST(request: NextRequest) {
   }
 
   const envelope = JSON.parse(rawBody) as CloudflareR2EventEnvelope;
+  if (process.env.STACKSMITH_R2_EVENT_E2E_MARKERS === "1") {
+    const markers = await writeE2EMarkers(envelope);
+
+    return NextResponse.json({
+      ok: true,
+      received: envelope.events.length,
+      handled: envelope.events.length,
+      skipped: 0,
+      markers
+    });
+  }
+
   const result = await handleCloudflareR2EventBatch(envelope);
 
   return NextResponse.json({ ok: true, ...result });
@@ -716,6 +755,7 @@ const envSchema = z.object({
   R2_PREFIX: z.string().optional(),
   R2_ENDPOINT: z.string().url().optional(),
   R2_EVENT_WEBHOOK_SECRET: z.string().optional(),
+  STACKSMITH_R2_EVENT_E2E_MARKERS: z.enum(["0", "1"]).optional(),
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
   POSTHOG_PROJECT_API_KEY: z.string().optional(),

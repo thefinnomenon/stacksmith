@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { runExternalCommand } from "../core/commands.js";
 import { createProject } from "../core/create.js";
+import { createR2Credentials, deleteCloudflareApiToken } from "../providers/cloudflare-r2-credentials.js";
 import { providerCommandPlan } from "../providers/command-plans.js";
 
 const liveCloudflareEnabled = process.env.STACKSMITH_LIVE_CLOUDFLARE_TEST === "1";
 const liveCloudflareSkipReason = "Set STACKSMITH_LIVE_CLOUDFLARE_TEST=1 to run live Cloudflare R2 and Queue tests with the local Wrangler login.";
+const liveR2CredentialsEnabled = process.env.STACKSMITH_LIVE_CLOUDFLARE_R2_CREDENTIALS_TEST === "1";
+const liveR2CredentialsSkipReason = "Set STACKSMITH_LIVE_CLOUDFLARE_R2_CREDENTIALS_TEST=1 and CLOUDFLARE_API_TOKEN with API Tokens Write to run live R2 credential tests.";
 const testTimeoutMs = 240_000;
 
 interface ProcessResult {
@@ -312,6 +315,58 @@ test("live Cloudflare CLI flow creates configures and undoes an R2 bucket", {
 
     await assertBucketDeleted(bucket, env);
   } finally {
+    await cleanupBucket(bucket, env);
+    await rm(dirname(root), { recursive: true, force: true });
+  }
+});
+
+test("live Cloudflare R2 credentials flow creates env values and deletes the token", {
+  skip: liveR2CredentialsEnabled ? false : liveR2CredentialsSkipReason,
+  timeout: testTimeoutMs
+}, async () => {
+  const env = await requireCloudflareAuth();
+  const name = `stacksmith-live-r2-creds-${projectSuffix()}`;
+  const bucket = `${name}-dev`;
+  const root = join(await mkdtemp(join(tmpdir(), "stacksmith-live-r2-creds-")), name);
+  const envFile = join(root, ".env.local");
+  const result = await createProject({ name, targetDir: root, force: true });
+  const createBucket = providerCommandPlan("cloudflare", result.manifest)
+    .find((command) => command.id === "cloudflare.r2.dev");
+  let tokenId: string | undefined;
+
+  try {
+    assert.ok(createBucket);
+    const commandResult = await runExternalCommand({ command: createBucket, execute: true, env });
+    assert.equal(commandResult.status, "executed", commandResult.stderr ?? commandResult.message);
+
+    const credentials = await createR2Credentials({
+      manifest: result.manifest,
+      environment: "development",
+      envFile,
+      execute: true
+    });
+    tokenId = credentials.tokenId;
+
+    assert.equal(credentials.status, "configured");
+    assert.ok(tokenId);
+
+    const content = await readFile(envFile, "utf8");
+    assert.match(content, new RegExp(`^R2_BUCKET_NAME=${bucket}$`, "m"));
+    assert.match(content, /^R2_ACCESS_KEY_ID=/m);
+    assert.match(content, /^R2_SECRET_ACCESS_KEY=/m);
+    assert.doesNotMatch(content, /CLOUDFLARE_API_TOKEN/);
+
+    const deleteToken = await deleteCloudflareApiToken({ tokenId, execute: true });
+    assert.equal(deleteToken.status, "deleted");
+    tokenId = undefined;
+
+    const deleteBucket = await runExternalCommand({ command: createBucket, execute: true, mode: "undo", env });
+    assert.equal(deleteBucket.status, "executed", deleteBucket.stderr ?? deleteBucket.message);
+    await assertBucketDeleted(bucket, env);
+  } finally {
+    if (tokenId) {
+      await deleteCloudflareApiToken({ tokenId, execute: true }).catch(() => undefined);
+    }
     await cleanupBucket(bucket, env);
     await rm(dirname(root), { recursive: true, force: true });
   }

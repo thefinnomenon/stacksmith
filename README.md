@@ -4,7 +4,7 @@ Forge full-stack apps from blueprint to production.
 
 Stacksmith is a local-first project bootstrap and operations control plane. It is designed to generate a production-minded app foundation, model the infrastructure it needs, and eventually provision the services through provider adapters.
 
-The current repository is an MVP foundation. It intentionally does not perform real cloud provisioning yet.
+The current repository is an MVP foundation. Most provider automation is still exposed as explicit, inspectable command plans. Cloudflare R2 S3 credential creation is implemented as an opt-in live API flow.
 
 Default stack decision:
 
@@ -25,14 +25,15 @@ What exists:
 - Environment model for development, preview, staging, and production.
 - Preview metadata helpers and PostHog observability tag helpers.
 - Generated Cloudflare R2 event forwarder Worker and signed Next webhook at `/api/webhook/cloudflare/r2`.
+- Opt-in Cloudflare R2 S3 credential generation that writes `R2_*` values to an env file without printing secrets.
 - Unified incident, evidence, action registry, Slack action message, and Slack signature scaffolding.
 - Postgres schema for jobs, audit events, incidents, preview metadata, Stripe preview routing, and database-backed feature flags.
 - MCP-facing tool registry stub for future Codex access to incidents, evidence, health, and actions.
 
 What does not exist yet:
 
-- Real cloud provider API calls.
-- Secret creation, storage, or rotation.
+- Real lifecycle API adapters for most providers.
+- General secret storage or rotation.
 - Actual Slack app installation or posting.
 - AI diagnosis/fix execution.
 - Running job worker.
@@ -86,6 +87,26 @@ The live GitHub tests create private temporary repositories, verify them, run th
 
 ```bash
 gh auth refresh -h github.com -s delete_repo
+```
+
+Generate R2 S3 credentials for a generated app env file:
+
+```bash
+npm run dev -- cloudflare setup-token --open
+pbpaste | npm run dev -- cloudflare setup-token --token-stdin --save --execute
+npm run dev -- r2 credentials --environment development --execute
+```
+
+This command infers `CLOUDFLARE_ACCOUNT_ID` from `wrangler whoami` when possible, creates a scoped Cloudflare API token for the environment bucket, writes `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_ENDPOINT`, `FILES_URL`, and `R2_PREFIX` into `.env.local`, and does not print secret values. It requires a parent token with Cloudflare API token write permission. By default `cloudflare setup-token --save` stores that operator token in `~/.stacksmith/env.local`, which `r2 credentials` reads automatically.
+
+```bash
+export CLOUDFLARE_API_TOKEN=...
+```
+
+The command prints the created token ID and undo command:
+
+```bash
+npm run dev -- r2 token delete --token-id <token-id> --execute
 ```
 
 Cloud Run plans include creating a Google Cloud project, linking billing, enabling APIs, creating an Artifact Registry repository, and deploying the API service and worker job. Stacksmith generates a default project ID such as `ss-facereel` in `.stacksmith/project.json`; edit `providers.cloud-run.projectId` if that globally unique Google Cloud project ID is unavailable.
@@ -155,6 +176,8 @@ npm run dev -- create
 - required environment variables, so secrets are not stored in Stacksmith state.
 
 Some operations are inherently not reversible, such as domain registration or one-shot job execution. Those commands use explicit no-op undo steps so the plan remains honest instead of pretending deletion is safe.
+
+Provider-specific direct commands, such as `r2 credentials`, may make live API calls only when `--execute` is provided.
 
 ## Docs
 

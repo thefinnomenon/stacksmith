@@ -18,6 +18,8 @@ import { sendSlackMessage } from "./operations/slack-sender.js";
 import { generateAppSkeleton } from "./templates/app.js";
 import { allProviderCommandPlans } from "./providers/command-plans.js";
 import { formatExternalCommand, orderExternalCommandsForExecution, runExternalCommand } from "./core/commands.js";
+import { createR2Credentials, deleteCloudflareApiToken, setupCloudflareApiToken } from "./providers/cloudflare-r2-credentials.js";
+import type { EnvironmentName } from "./core/types.js";
 
 function help(): string {
   return [
@@ -32,13 +34,16 @@ function help(): string {
     "  health [--json]",
     "  dev [--json]",
     "  commands [--json] [--provider github] [--id command.id] [--execute] [--undo]",
+    "  cloudflare setup-token [--open] [--token token | --token-stdin] [--save] [--env-path ~/.stacksmith/env.local] [--execute]",
+    "  r2 credentials [--environment development|preview|staging|production] [--bucket name] [--env-path .env.local] [--execute]",
+    "  r2 token delete --token-id id [--execute]",
     "  domain promote <domain> [--json]",
     "  notify-slack --channel C123 [--execute]",
     "  schema",
     "  mcp-tools [--json]",
     "  noop [reason]",
     "",
-    "Phase 1 is local-only: provider adapters record scaffold state and do not call vendor APIs."
+    "Most Phase 1 provider adapters are scaffolded. Direct live commands require --execute."
   ].join("\n");
 }
 
@@ -50,12 +55,39 @@ function providerIds(value: string | undefined): ProviderId[] | undefined {
   return value.split(",").map((item) => item.trim()).filter(Boolean) as ProviderId[];
 }
 
+function environmentName(value: string | undefined): EnvironmentName {
+  const environment = value ?? "development";
+  if (
+    environment !== "development" &&
+    environment !== "preview" &&
+    environment !== "staging" &&
+    environment !== "production"
+  ) {
+    throw new Error("Environment must be one of: development, preview, staging, production.");
+  }
+
+  return environment;
+}
+
 async function loadProject(flags: Record<string, string | boolean>) {
   const manifestPath = flagString(flags, "manifest");
   const statePath = flagString(flags, "state");
   const manifest = await loadManifest(manifestPath);
   const state = await loadState(manifest, statePath);
   return { manifest, state, manifestPath, statePath };
+}
+
+function envPathFlag(flags: Record<string, string | boolean>): string | undefined {
+  return flagString(flags, "env-path") ?? flagString(flags, "env-file");
+}
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 async function run(argv: string[]): Promise<string> {
@@ -235,6 +267,90 @@ async function run(argv: string[]): Promise<string> {
       return flagBoolean(parsed.flags, "json")
         ? JSON.stringify(commands, null, 2)
         : commands.map((command) => `${command.id}: ${formatExternalCommand(command, mode)}`).join("\n");
+    }
+
+    case "cloudflare": {
+      const subcommand = parsed.positionals[0];
+      if (subcommand !== "setup-token") {
+        throw new Error("Unknown cloudflare command. Use `stacksmith cloudflare setup-token`.");
+      }
+      const token = flagBoolean(parsed.flags, "token-stdin")
+        ? (await readStdin()).trim()
+        : flagString(parsed.flags, "token") ?? process.env.CLOUDFLARE_API_TOKEN;
+
+      const result = await setupCloudflareApiToken({
+        apiToken: token,
+        accountId: flagString(parsed.flags, "account-id"),
+        envFile: envPathFlag(parsed.flags),
+        open: flagBoolean(parsed.flags, "open"),
+        save: flagBoolean(parsed.flags, "save"),
+        execute: flagBoolean(parsed.flags, "execute")
+      });
+
+      return flagBoolean(parsed.flags, "json")
+        ? JSON.stringify(result, null, 2)
+        : [
+            result.message,
+            `Token page: ${result.tokenPageUrl}`,
+            `Env file: ${result.envFile}`,
+            `Opened browser: ${result.opened ? "yes" : "no"}`,
+            "",
+            "Required setup:",
+            ...result.requiredPermissions.map((line) => `- ${line}`)
+          ].join("\n");
+    }
+
+    case "r2": {
+      const subcommand = parsed.positionals[0];
+      const nested = parsed.positionals[1];
+
+      if (subcommand === "credentials") {
+        const { manifest } = await loadProject(parsed.flags);
+        const result = await createR2Credentials({
+          manifest,
+          environment: environmentName(flagString(parsed.flags, "environment")),
+          bucketName: flagString(parsed.flags, "bucket"),
+          accountId: flagString(parsed.flags, "account-id"),
+          envFile: envPathFlag(parsed.flags),
+          filesUrl: flagString(parsed.flags, "files-url"),
+          prefix: flagString(parsed.flags, "prefix"),
+          tokenName: flagString(parsed.flags, "token-name"),
+          execute: flagBoolean(parsed.flags, "execute")
+        });
+
+        return flagBoolean(parsed.flags, "json")
+          ? JSON.stringify(result, null, 2)
+          : [
+              result.message,
+              `Environment: ${result.environment}`,
+              `Bucket: ${result.bucketName}`,
+              `Account: ${result.accountId}`,
+              `Endpoint: ${result.endpoint}`,
+              `Env file: ${result.envFile}`,
+              `Keys: ${result.envKeys.join(", ")}`,
+              result.tokenId ? `Token ID: ${result.tokenId}` : "",
+              result.tokenId ? `Undo: stacksmith r2 token delete --token-id ${result.tokenId} --execute` : ""
+            ].filter(Boolean).join("\n");
+      }
+
+      if (subcommand === "token" && nested === "delete") {
+        const tokenId = flagString(parsed.flags, "token-id") ?? parsed.positionals[2];
+        if (!tokenId) {
+          throw new Error("r2 token delete requires --token-id.");
+        }
+
+        const result = await deleteCloudflareApiToken({
+          tokenId,
+          accountId: flagString(parsed.flags, "account-id"),
+          execute: flagBoolean(parsed.flags, "execute")
+        });
+
+        return flagBoolean(parsed.flags, "json")
+          ? JSON.stringify(result, null, 2)
+          : result.message;
+      }
+
+      throw new Error("Unknown r2 command. Use `stacksmith r2 credentials` or `stacksmith r2 token delete --token-id id`.");
     }
 
     case "domain": {

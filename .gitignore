@@ -1,4 +1,5 @@
 node_modules/
 dist/
 .stacksmith/state.json
+.env*.local
 .DS_Store
